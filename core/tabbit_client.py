@@ -1,8 +1,10 @@
 import re
 import json
 import uuid
+import time
 import hashlib
 import base64
+import random
 import logging
 import urllib.parse
 from typing import AsyncGenerator
@@ -10,6 +12,39 @@ from typing import AsyncGenerator
 import httpx
 
 logger = logging.getLogger("tabbit2openai")
+
+# ── unique-uuid 生成器（移植自 web 端 eN 算法） ──
+# 前端把"是否默认浏览器"状态编码进 unique-uuid 的第 5 位：
+#   - 默认浏览器 → 第 5 位 = "1"
+#   - 非默认浏览器 → 第 5 位从 "023456789abcdef" 随机（绝不出现 "1"）
+# 同时 8 个固定位置 [2,7,11,14,18,21,25,28] 填当前时间戳(16进制)，
+# 后端据此校验时效性。把 is_default=True 即可让后端按 Pro 会员发权益。
+_UUID_MARKER_POS = 5
+_UUID_DEFAULT_MARKER = "1"
+_UUID_TS_POSITIONS = [2, 7, 11, 14, 18, 21, 25, 28]
+_UUID_HEX = "0123456789abcdef"
+_UUID_HEX_NO_MARKER = _UUID_HEX.replace(_UUID_DEFAULT_MARKER, "")
+
+
+def _gen_unique_uuid(is_default_browser: bool = True) -> str:
+    """生成 Tabbit 风格 unique-uuid，编码默认浏览器标记 + 时间戳。
+
+    1:1 移植自 web 端 chunk eN(isDefault) 函数。
+    """
+    # 当前秒级时间戳 → 8 位 16 进制（取末 8 位，不足前补 0）
+    ts_hex = format(int(time.time()), "x").zfill(len(_UUID_TS_POSITIONS))[-len(_UUID_TS_POSITIONS):]
+    ts_map = {pos: ts_hex[i] for i, pos in enumerate(_UUID_TS_POSITIONS)}
+    chars = []
+    for i in range(32):
+        if i == _UUID_MARKER_POS:
+            # 标记位：默认浏览器放 "1"，否则从剔除 "1" 的字符集随机
+            chars.append(_UUID_DEFAULT_MARKER if is_default_browser else random.choice(_UUID_HEX_NO_MARKER))
+        elif i in ts_map:
+            chars.append(ts_map[i])
+        else:
+            chars.append(random.choice(_UUID_HEX))
+    raw = "".join(chars)
+    return f"{raw[0:8]}-{raw[8:12]}-{raw[12:16]}-{raw[16:20]}-{raw[20:32]}"
 
 MODEL_MAP = {
     "best": "Default",
@@ -32,7 +67,7 @@ MODEL_MAP = {
 
 
 class TabbitClient:
-    def __init__(self, token_str: str, base_url: str | None = None, client_id: str | None = None, browser_version: str | None = None, sparkle_version: int | None = None):
+    def __init__(self, token_str: str, base_url: str | None = None, client_id: str | None = None, browser_version: str | None = None, sparkle_version: int | None = None, default_browser: bool = True):
         parts = token_str.split("|")
         self.jwt_token = parts[0]
         self.next_auth = parts[1] if len(parts) > 1 else None
@@ -44,6 +79,9 @@ class TabbitClient:
         # x-req-ctx = base64("版本号(sparkle_version)")，如 base64("1.1.39(10101039)")
         self.browser_version = browser_version or "1.1.39"
         self.sparkle_version = sparkle_version or 10101039
+        # 默认浏览器标记：编进 unique-uuid 第 5 位，后端据此发 Pro 会员权益
+        # 移植自 web 端 eN(isDefault) 算法。设 True 即让后端按默认浏览器用户对待。
+        self.default_browser = default_browser
 
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=15, read=120, write=15, pool=15),
@@ -65,9 +103,9 @@ class TabbitClient:
         x_req_ctx = base64.b64encode(
             f"{self.browser_version}({self.sparkle_version})".encode()
         ).decode()
-        # unique-uuid 是客户端身份校验关键头，缺则 492 "欢迎使用 Tabbit 浏览器"
-        # 消融实验证明: 只要带任意 UUID 即可，其他签名头(x-nonce/x-signature 等)不校验
-        unique_uuid = str(uuid.uuid4())
+        # unique-uuid 编码"是否默认浏览器"状态 + 时间戳，后端据此发 Pro 会员权益。
+        # 算法移植自 web 端 eN()：第 5 位 "1"=默认浏览器，8 个固定位填当前时间戳。
+        unique_uuid = _gen_unique_uuid(self.default_browser)
         return {
             "User-Agent": f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
             "sec-ch-ua": '"Chromium";v="148", "Tabbit";v="148", "Not/A)Brand";v="99"',

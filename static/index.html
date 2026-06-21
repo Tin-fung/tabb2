@@ -556,6 +556,13 @@ async function renderSettings(el) {
             <label class="block text-sm text-zinc-400 mb-1.5">浏览器版本号（绕过版本校验）</label>
             <input id="sBrowserVersion" type="text" value="${esc(s.tabbit.browser_version || '1.1.39')}" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100" placeholder="例如 1.1.39">
           </div>
+          <div>
+            <label class="block text-sm text-zinc-400 mb-1.5">伪装默认浏览器（领免费 Pro 会员）</label>
+            <select id="sDefaultBrowser" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100">
+              <option value="true" ${s.tabbit.default_browser !== false ? 'selected' : ''}>开启（unique-uuid 带默认浏览器标记，后端按 Pro 发权益）</option>
+              <option value="false" ${s.tabbit.default_browser === false ? 'selected' : ''}>关闭（普通用户）</option>
+            </select>
+          </div>
         </div>
       </div>
       <!-- 模型清单（动态拉取）-->
@@ -665,6 +672,7 @@ async function saveSettings() {
         base_url: document.getElementById('sBaseUrl').value,
         client_id: document.getElementById('sClientId').value,
         browser_version: document.getElementById('sBrowserVersion').value,
+        default_browser: document.getElementById('sDefaultBrowser').value === 'true',
         api_key: document.getElementById('sApiKey').value,
         claude_default_model: document.getElementById('sClaudeModel').value,
         openai_system_prompt: document.getElementById('sOpenaiPrompt').value,

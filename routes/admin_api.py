@@ -9,7 +9,7 @@ from typing import Optional
 from core.config import ConfigManager, hash_password
 from core.auth import create_jwt, verify_password, require_admin
 from core.token_manager import TokenManager
-from core.tabbit_client import TabbitClient
+from core.tabbit_client import TabbitClient, _gen_unique_uuid
 from core.log_store import LogStore
 
 logger = logging.getLogger("tabbit2openai")
@@ -39,6 +39,7 @@ class SettingsUpdateRequest(BaseModel):
     base_url: Optional[str] = None
     client_id: Optional[str] = None
     browser_version: Optional[str] = None
+    default_browser: Optional[bool] = None
     api_key: Optional[str] = None
     max_entries: Optional[int] = None
     claude_default_model: Optional[str] = None
@@ -168,6 +169,7 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             _cfg.get("tabbit", "client_id"),
             _cfg.get("tabbit", "browser_version"),
             _cfg.get("tabbit", "sparkle_version"),
+            _cfg.get("tabbit", "default_browser", default=True),
         )
         try:
             session_id = await client.create_chat_session()
@@ -270,6 +272,8 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             _cfg.set_val("tabbit", "client_id", req.client_id)
         if req.browser_version is not None:
             _cfg.set_val("tabbit", "browser_version", req.browser_version)
+        if req.default_browser is not None:
+            _cfg.set_val("tabbit", "default_browser", req.default_browser)
         if req.api_key is not None:
             _cfg.set_val("proxy", "api_key", req.api_key)
         if req.claude_default_model is not None:
@@ -376,6 +380,13 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
         except Exception as e:
             check("x-req-ctx编码", "fail", f"编码失败: {e}")
 
+        # 1e. 默认浏览器标记（unique-uuid 第5位编码 Pro 会员权益）
+        default_browser = tabbit_cfg.get("default_browser", True)
+        if default_browser:
+            check("默认浏览器标记", "pass", "unique-uuid 第5位='1'，后端按 Pro 会员发权益")
+        else:
+            check("默认浏览器标记", "warn", "未开启，按普通用户对待（无 Pro 权益）")
+
         # 2. Token 池
         tokens = _cfg.get("tokens", default=[]) or []
         if not tokens:
@@ -404,7 +415,7 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
 
             headers = {
                 "x-req-ctx": _base64.b64encode(f"{browser_version}({sparkle})".encode()).decode(),
-                "unique-uuid": str(__import__("uuid").uuid4()),
+                "unique-uuid": _gen_unique_uuid(tabbit_cfg.get("default_browser", True)),
                 "x-chrome-id-consistency-request": f"version=1,client_id={tabbit_cfg.get('client_id','')},device_id=test,sync_account_id={user_id},signin_mode=all_accounts,signout_mode=show_confirmation",
             }
             cookies = {"token": jwt_token, "user_id": user_id, "managed": "tab_browser", "NEXT_LOCALE": "zh"}

@@ -15,6 +15,9 @@ DEFAULT_CONFIG = {
         "client_id": "e7fa44387b1238ef1f6f",
         "browser_version": "1.1.39",
         "sparkle_version": 10101039,
+        # 默认浏览器标记：编进 unique-uuid 第 5 位，让上游按 Pro 会员发权益。
+        # 算法移植自 web 端 eN(isDefault)。True=伪装默认浏览器领免费 Pro。
+        "default_browser": True,
     },
     "tokens": [],
     "proxy": {"api_key": "", "system_prompt": ""},
@@ -78,6 +81,9 @@ class ConfigManager:
         # sparkle_version 默认值
         if not tabbit.get("sparkle_version"):
             tabbit["sparkle_version"] = 10101039
+        # default_browser 默认开启（领免费 Pro 会员）
+        if tabbit.get("default_browser") is None:
+            tabbit["default_browser"] = True
 
     def _save(self, config: dict | None = None):
         if config is None:

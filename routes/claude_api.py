@@ -114,6 +114,7 @@ async def _get_client_and_token(
             _cfg.get("tabbit", "client_id") if _cfg else None,
             _cfg.get("tabbit", "browser_version") if _cfg else None,
             _cfg.get("tabbit", "sparkle_version") if _cfg else None,
+            _cfg.get("tabbit", "default_browser", default=True) if _cfg else True,
         )
     return _fallback_clients[token], "bearer", ""
 
