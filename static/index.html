@@ -150,6 +150,7 @@ const navItems = [
   { id: 'settings', label: 'Settings', icon: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>' },
   { id: 'logs', label: 'Logs', icon: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>' },
   { id: 'diagnose', label: '诊断', icon: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>' },
+  { id: 'quota', label: '额度', icon: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>' },
 ];
 
 function layout() {
@@ -208,6 +209,7 @@ async function loadPage() {
       case 'settings': await renderSettings(el); break;
       case 'logs': await renderLogs(el); break;
       case 'diagnose': await renderDiagnose(el); break;
+      case 'quota': await renderQuota(el); break;
     }
   } catch (e) {
     el.innerHTML = `<div class="text-red-400">加载失败: ${e.message}</div>`;
@@ -874,6 +876,114 @@ function renderDiagResult(r) {
         </table>
       </div>
     </div>`;
+}
+
+// ── 额度查询 ──
+
+let lastQuotaResult = null; // 缓存额度结果，切页面后恢复
+
+async function renderQuota(el) {
+  el.innerHTML = `
+    <div class="flex items-center justify-between mb-6">
+      <div>
+        <h2 class="text-2xl font-semibold">额度查询</h2>
+        <p class="text-sm text-zinc-500 mt-1">查询各账号额度使用情况，验证默认浏览器伪装是否生效（Pro = 5x quota）</p>
+      </div>
+      <button onclick="runQuota()" id="quotaRunBtn" class="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 transition-colors">查询额度</button>
+    </div>
+    <div id="quotaResult"></div>`;
+  // 恢复上次结果（切页面不丢失）
+  if (lastQuotaResult) renderQuotaResult(lastQuotaResult);
+}
+
+async function runQuota() {
+  const btn = document.getElementById('quotaRunBtn');
+  const el = document.getElementById('quotaResult');
+  btn.disabled = true; btn.textContent = '查询中...';
+  el.innerHTML = '<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-zinc-400">正在查询各账号额度（unique-uuid 带默认浏览器标记，后端按 Pro 发权益）...</p></div>';
+  try {
+    const r = await api('/quota');
+    lastQuotaResult = r;
+    renderQuotaResult(r);
+  } catch (e) {
+    el.innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">查询失败: ${esc(e.message)}</p></div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = '查询额度';
+  }
+}
+
+function renderQuotaResult(r) {
+  const el = document.getElementById('quotaResult');
+  if (!r.ok) {
+    el.innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">${esc(r.error || '查询失败')}</p></div>`;
+    return;
+  }
+  const rows = r.results.map(res => {
+    if (!res.ok) {
+      return `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5 mb-3">
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-medium text-zinc-200">${esc(res.token_name || res.token_id)}</span>
+          <span class="text-xs px-2 py-0.5 rounded bg-red-900/50 text-red-300">失败</span>
+        </div>
+        <p class="text-xs text-red-400">${esc(res.error)}</p>
+      </div>`;
+    }
+    const q = res.quota || {};
+    // 额度结构因版本而异，尽量提取关键字段，兜底显示原始 JSON
+    const cards = renderQuotaCards(q);
+    return `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5 mb-3">
+      <div class="flex items-center justify-between mb-3">
+        <span class="text-sm font-medium text-zinc-200">${esc(res.token_name || res.token_id)}</span>
+        <span class="text-xs px-2 py-0.5 rounded bg-emerald-900/50 text-emerald-300">查询成功</span>
+      </div>
+      ${cards}
+      <details class="mt-3">
+        <summary class="text-xs text-zinc-500 cursor-pointer hover:text-zinc-400">原始响应</summary>
+        <pre class="text-xs text-zinc-400 mt-2 overflow-x-auto bg-zinc-950 p-3 rounded-lg">${esc(JSON.stringify(q, null, 2))}</pre>
+      </details>
+    </div>`;
+  }).join('');
+  el.innerHTML = `<div class="space-y-3">${rows}</div>`;
+}
+
+function renderQuotaCards(q) {
+  // 尝试从多种可能的字段结构里提取额度信息
+  // 常见结构: { quota: { used, total }, ... } 或 { usage: {...}, limit: {...} } 或数组
+  const cards = [];
+  // 递归找 used/total/limit 之类字段
+  const flat = flattenQuota(q);
+  if (flat.length === 0) return '<p class="text-xs text-zinc-500">（未识别到结构化额度字段，看原始响应）</p>';
+  return flat.map(f => `
+    <div class="flex items-center justify-between py-2 border-b border-zinc-800 last:border-0">
+      <span class="text-sm text-zinc-300">${esc(f.label)}</span>
+      <span class="text-sm ${f.ratio >= 0.9 ? 'text-red-400' : f.ratio >= 0.7 ? 'text-yellow-400' : 'text-emerald-400'}">
+        ${esc(f.used)} / ${esc(f.total)}${f.unit ? ' ' + f.unit : ''} <span class="text-zinc-500">(${(f.ratio*100).toFixed(1)}%)</span>
+      </span>
+    </div>`).join('');
+}
+
+function flattenQuota(obj, prefix = '') {
+  // 从嵌套结构里提取 { used, total } 或 { usage, limit } 配对
+  const out = [];
+  if (!obj || typeof obj !== 'object') return out;
+  if (Array.isArray(obj)) {
+    obj.forEach((v, i) => out.push(...flattenQuota(v, `${prefix}[${i}]`)));
+    return out;
+  }
+  // 命中 used/total 或 usage/limit 配对
+  const used = obj.used ?? obj.usage ?? obj.consume ?? obj.consumed;
+  const total = obj.total ?? obj.limit ?? obj.quota ?? obj.max;
+  if (used != null && total != null) {
+    const ratio = total > 0 ? (used / total) : 0;
+    out.push({ label: prefix || '额度', used, total, ratio, unit: obj.unit || '' });
+  }
+  // 递归子对象
+  for (const k of Object.keys(obj)) {
+    if (typeof obj[k] === 'object' && obj[k] !== null) {
+      out.push(...flattenQuota(obj[k], prefix ? `${prefix}.${k}` : k));
+    }
+  }
+  return out;
 }
 
 // ── Helpers ──

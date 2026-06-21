@@ -332,6 +332,55 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
     ):
         return _logs.query(status=status, page=page, page_size=page_size)
 
+    # ── 额度查询（验证默认浏览器伪装是否生效 → Pro 5x quota）──
+    @r.get("/quota", dependencies=[Depends(admin_dep)])
+    async def query_quota(token_id: Optional[str] = None):
+        """查询账号额度使用情况。
+
+        不传 token_id：查所有 enabled token 的额度（对比各账号 Pro 状态）。
+        传 token_id：只查指定 token。
+        unique-uuid 第5位编码默认浏览器标记，后端据此发 Pro 权益（5x quota）。
+        """
+        tokens = _cfg.get("tokens", default=[]) or []
+        if token_id:
+            targets = [t for t in tokens if t["id"] == token_id]
+            if not targets:
+                raise HTTPException(status_code=404, detail="token not found")
+        else:
+            targets = [t for t in tokens if t.get("enabled", True)]
+
+        if not targets:
+            return {"ok": False, "error": "无可用 token", "results": []}
+
+        results = []
+        for t in targets:
+            client = TabbitClient(
+                t["value"],
+                _cfg.get("tabbit", "base_url"),
+                _cfg.get("tabbit", "client_id"),
+                _cfg.get("tabbit", "browser_version"),
+                _cfg.get("tabbit", "sparkle_version"),
+                _cfg.get("tabbit", "default_browser", default=True),
+            )
+            try:
+                quota = await client.get_quota_usage()
+                results.append({
+                    "token_id": t["id"],
+                    "token_name": t.get("name", ""),
+                    "ok": True,
+                    "quota": quota,
+                })
+            except Exception as e:
+                results.append({
+                    "token_id": t["id"],
+                    "token_name": t.get("name", ""),
+                    "ok": False,
+                    "error": str(e),
+                })
+            finally:
+                await client.client.aclose()
+        return {"ok": True, "results": results}
+
     # ── 诊断（深度健康检查，固化 493/492 排查经验）──
 
     @r.get("/diagnose", dependencies=[Depends(admin_dep)])
@@ -474,24 +523,6 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
                         check("建会话", "fail", f"未提取到 session_id，status={resp.status_code}")
             except Exception as e:
                 check("建会话", "fail", f"失败: {e}")
-
-            # 3c. 额度查询（验证默认浏览器伪装是否生效 → Pro 5x quota）
-            try:
-                async with _httpx.AsyncClient(timeout=10, verify=False, follow_redirects=True) as hc:
-                    quota_uuid = _gen_unique_uuid(tabbit_cfg.get("default_browser", True), time.time() + server_time_offset)
-                    h3 = {**headers, "unique-uuid": quota_uuid, "referer": f"{base_url}/newtab"}
-                    resp = await hc.get(f"{base_url}/api/commerce/quota/v1/usage",
-                                        params={"user_id": user_id, "timezone": "Asia/Shanghai"},
-                                        headers=h3, cookies=cookies)
-                    if resp.status_code == 200:
-                        qdata = resp.json()
-                        # 提取额度信息（结构因版本而异，尽量取关键字段）
-                        detail = json.dumps(qdata, ensure_ascii=False)[:200]
-                        check("额度查询(会员验证)", "pass", f"unique-uuid第5位='1'伪装Pro，响应: {detail}")
-                    else:
-                        check("额度查询(会员验证)", "warn", f"额度接口 {resp.status_code}: {resp.text[:100]}")
-            except Exception as e:
-                check("额度查询(会员验证)", "fail", f"失败: {e}")
 
         # 4. 动态模型注册表
         from core.model_registry import get_registry
