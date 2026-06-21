@@ -1,9 +1,15 @@
 """动态模型注册表
 
-启动时从 Tabbit 上游 /api/v0/chat/models 拉取真实模型清单，
-构建 alias → selected_model 映射，带缓存与 TTL。
+启动时从 Tabbit 上游拉取真实模型清单，构建 alias → selected_model 映射，
+带缓存与 TTL。
 
 相比硬编码 MODEL_MAP 的好处：Tabbit 升级模型不用改代码。
+
+关键发现（cmp_models.py 验证）:
+- /proxy/v1/model_config/models 是最新清单（含 GLM-5.1/GPT-5.5 等新模型）
+- /api/v0/chat/models 是缓存旧清单，模型少且滞后
+- 上游 selectedModel 字段接受 display_name（如 "GLM-5.1"），验证可成功
+- 接口 B 的模型只有 display_name 没有 name，故 selectedModel 用 display_name
 """
 import time
 import logging
@@ -16,8 +22,8 @@ logger = logging.getLogger("tabbit2openai")
 # 缓存 TTL（秒）：模型清单不常变，缓存 1 小时
 MODEL_CACHE_TTL = 3600
 
-# 上游模型清单接口（/api/v0/chat/models 不需要 token 鉴权，前面探测验证过）
-MODELS_API_PATH = "/api/v0/chat/models"
+# 上游模型清单接口（最新清单，含新模型）
+MODELS_API_PATH = "/proxy/v1/model_config/models?a=0"
 
 
 class ModelRegistry:
@@ -29,43 +35,51 @@ class ModelRegistry:
         self._models_meta: Optional[list] = None  # 完整模型元信息
         self._expires_at: float = 0
 
-    def _build_alias_map(self, supported_models: dict) -> tuple[dict, list]:
-        """从上游 supported_models 构建 alias → selected_model 映射
+    def _build_alias_map(self, models: list) -> tuple[dict, list]:
+        """从上游模型列表构建 alias → selected_model 映射
 
-        alias 规则（优先级从高到低）：
-        1. display_name 小写（如 "最佳"→"best-model" 不合适，用英文 alias）
-        2. name 本身（如 "gpt-5.2-chat"）
-        3. display_name 小写去空格（如 "GPT-5.2-Chat"→"gpt-5.2-chat"）
+        selectedModel 用 display_name（上游验证接受）。
+        alias 规则：
+        1. display_name 小写去空格（如 "GPT-5.2-Chat"→"gpt-5.2-chat"）
+        2. name 本身（如有，如 "glm-5"）
+        3. display_name 原值（如 "GLM-5.1"）
+        4. 特殊：Default/最佳/best → Default
         """
         alias_map = {}
         models_meta = []
-        for provider, models in supported_models.items():
-            for m in models:
-                name = m.get("name", "")
-                display = m.get("display_name", "")
-                if not name:
-                    continue
-                meta = {
-                    "id": name,
-                    "display_name": display,
-                    "provider": provider,
-                    "supports_images": m.get("supports_images", False),
-                    "supports_tools": m.get("supports_tools", False),
-                    "sort_order": m.get("sort_order", 0),
-                }
-                models_meta.append(meta)
-                # name 本身作为 alias
-                alias_map[name.lower()] = name
-                # display_name 英文/数字部分作为 alias（去空格、小写）
-                if display:
-                    alias_display = display.lower().replace(" ", "")
-                    if alias_display and alias_display not in alias_map:
-                        alias_map[alias_display] = name
-                # 特殊：best-model → best
-                if name == "best-model":
-                    alias_map["best"] = name
-                    alias_map["默认"] = name
-                    alias_map["最佳"] = name
+        for m in models:
+            name = m.get("name", "") or ""
+            display = m.get("display_name", "") or ""
+            if not display and not name:
+                continue
+            # selectedModel 优先用 display_name（接口 B 验证可用），无则用 name
+            selected = display or name
+            meta = {
+                "id": name or display,  # id 给前端展示，name 优先
+                "display_name": display,
+                "selected_model": selected,
+                "provider": m.get("provider", ""),
+                "supports_images": m.get("supports_images", False),
+                "supports_tools": m.get("supports_tools", False),
+                "sort_order": m.get("sort_order", 0),
+            }
+            models_meta.append(meta)
+            # alias: display_name 小写去空格
+            if display:
+                alias_display = display.lower().replace(" ", "")
+                if alias_display:
+                    alias_map[alias_display] = selected
+                    alias_map[display] = selected  # 原值也收
+            # alias: name 本身（小写）
+            if name:
+                alias_map[name.lower()] = selected
+                alias_map[name] = selected
+            # 特殊：Default/最佳/best 统一映射
+            if display in ("Default", "最佳") or name == "best-model":
+                alias_map["best"] = selected
+                alias_map["default"] = selected
+                alias_map["默认"] = selected
+                alias_map["最佳"] = selected
         return alias_map, models_meta
 
     async def refresh(self, force: bool = False) -> bool:
@@ -82,11 +96,18 @@ class ModelRegistry:
                     logger.warning("model registry refresh failed: %s", resp.status_code)
                     return False
                 data = resp.json()
-            supported = data.get("supported_models", {})
-            if not supported:
-                logger.warning("model registry: empty supported_models")
+            # 接口 B 返回 {"models": [...]}，接口 A 返回 {"supported_models": {provider: [...]}}
+            models = []
+            if isinstance(data.get("models"), list):
+                models = data["models"]
+            elif isinstance(data.get("supported_models"), dict):
+                for provider, ms in data["supported_models"].items():
+                    for m in ms:
+                        models.append({**m, "provider": provider})
+            if not models:
+                logger.warning("model registry: empty models list")
                 return False
-            alias_map, models_meta = self._build_alias_map(supported)
+            alias_map, models_meta = self._build_alias_map(models)
             self._cache = alias_map
             self._models_meta = models_meta
             self._expires_at = time.time() + MODEL_CACHE_TTL
