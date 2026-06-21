@@ -37,6 +37,30 @@ echo "  sparkle_version: $SV"
 echo "  x-req-ctx:       $X_REQ_CTX"
 echo ""
 
+if [ "$1" = "--online" ] || [ "$1" = "--compare" ]; then
+  # 查 appcast 在线最新版本
+  echo "=== appcast 在线最新版本 ==="
+  APPCAST=$(curl -s -k --max-time 8 -A "Mozilla/5.0" "https://web.tabbit.ai/api/v0/upgrade/appcast.xml" 2>/dev/null)
+  if [ -n "$APPCAST" ]; then
+    ON_BV=$(echo "$APPCAST" | grep -oE '<sparkle:shortVersionString>[^<]+</sparkle:shortVersionString>' | sed 's/<[^>]*>//g' | head -1)
+    ON_SV=$(echo "$APPCAST" | grep -oE '<sparkle:version>[^<]+</sparkle:version>' | sed 's/<[^>]*>//g' | head -1)
+    PUBDATE=$(echo "$APPCAST" | grep -oE '<pubDate>[^<]+</pubDate>' | sed 's/<[^>]*>//g' | head -1)
+    echo "  browser_version: $ON_BV"
+    echo "  sparkle_version: $ON_SV"
+    echo "  发布日期: $PUBDATE"
+    echo ""
+    if [ -n "$ON_BV" ] && [ "$BV" = "$ON_BV" ] && [ "$SV" = "$ON_SV" ]; then
+      echo "✅ 本机版本与 appcast 一致，已是最新"
+    elif [ -n "$ON_BV" ]; then
+      echo "⚠️  appcast 有更新版本: $ON_BV($ON_SV)"
+      echo "    本机: $BV($SV) → 最新: $ON_BV($ON_SV)"
+    fi
+  else
+    echo "  ❌ 无法访问 appcast（网络问题）"
+  fi
+  echo ""
+fi
+
 if [ "$1" = "--compare" ]; then
   # 找项目 config.py 的默认版本
   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

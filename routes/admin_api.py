@@ -335,91 +335,77 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
     ):
         return _logs.query(status=status, page=page, page_size=page_size)
 
-    # ── 版本检测（实战探测 x-req-ctx 是否被上游接受）──
+    # ── 版本检测（读 Sparkle appcast.xml，查最新版本）──
     @r.get("/version", dependencies=[Depends(admin_dep)])
     async def check_version():
-        """检测当前 browser_version/sparkle_version 是否仍被上游接受。
+        """查 Tabbit 最新版本（读 Sparkle appcast 更新清单）。
 
-        Tabbit 没有公开的版本查询 API（版本更新检查在桌面端 Sparkle 原生层，
-        不走 web 接口；/api/v1/version 实测 404）。所以无法"查最新版本号"。
+        appcast 地址：{base_url}/api/v0/upgrade/appcast.xml（从 Sparkle.framework
+        二进制反查得到，无需认证，公开可读）。
 
-        改用实战探测：用当前 x-req-ctx 发个轻量请求（模型列表接口），
-        - 200 → 当前版本仍有效，x-req-ctx 被接受
-        - 493 → 版本过期，需更新 browser_version/sparkle_version
-        这样能准确判断"要不要更新"，而非"最新版本是多少"。
-
-        最新版本号请在本机运行 check_tabbit_version.sh 查 Tabbit.app。
+        返回当前配置版本 vs appcast 最新版本，is_latest 判断是否需要同步。
+        版本过期会导致 x-req-ctx 校验失败触发 493。
         """
-        import json as _json
-        import base64 as _base64
         import httpx as _httpx
+        import re as _re
         tabbit_cfg = _cfg.get("tabbit", default={}) or {}
         current_bv = tabbit_cfg.get("browser_version", "")
         current_sv = tabbit_cfg.get("sparkle_version")
         base_url = tabbit_cfg.get("base_url", "https://web.tabbit.ai")
-        x_req_ctx = _base64.b64encode(f"{current_bv}({current_sv})".encode()).decode()
+        appcast_url = f"{base_url}/api/v0/upgrade/appcast.xml"
 
-        tokens = _cfg.get("tokens", default=[]) or []
-        ver_token = next((t for t in tokens if t.get("enabled", True)), None)
-        if not ver_token:
-            return {"ok": False, "error": "无可用 token，无法探测",
-                    "current": {"browser_version": current_bv, "sparkle_version": current_sv},
-                    "x_req_ctx": x_req_ctx}
-
-        parts = ver_token["value"].split("|")
-        jwt_token = parts[0]
-        user_id = ""
-        try:
-            payload = _json.loads(_base64.urlsafe_b64decode(jwt_token.split(".")[1] + "=="))
-            user_id = payload.get("id", payload.get("sub", ""))
-        except Exception:
-            pass
-        cookies = {"token": jwt_token, "user_id": user_id, "managed": "tab_browser", "NEXT_LOCALE": "zh"}
-        if len(parts) > 1:
-            cookies["next-auth.session-token"] = parts[1]
-
-        headers = {
-            "x-req-ctx": x_req_ctx,
-            "unique-uuid": _gen_unique_uuid(tabbit_cfg.get("default_browser", True)),
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-        }
         try:
             async with _httpx.AsyncClient(timeout=10, verify=False) as hc:
-                # 用模型列表接口探测（轻量、真机抓包确认存在）
-                resp = await hc.get(f"{base_url}/proxy/v1/model_config/models?a=0",
-                                    headers=headers, cookies=cookies)
-            if resp.status_code == 200:
-                return {
-                    "ok": True,
-                    "current": {"browser_version": current_bv, "sparkle_version": current_sv},
-                    "x_req_ctx": x_req_ctx,
-                    "is_valid": True,
-                    "detail": f"当前版本 {current_bv}({current_sv}) 仍被上游接受，x-req-ctx 校验通过",
-                }
-            elif resp.status_code == 493:
-                return {
-                    "ok": True,
-                    "current": {"browser_version": current_bv, "sparkle_version": current_sv},
-                    "x_req_ctx": x_req_ctx,
-                    "is_valid": False,
-                    "detail": f"版本过期！当前 {current_bv}({current_sv}) 被上游拒绝（493）。"
-                              f"请在本机运行 check_tabbit_version.sh 查最新版本，"
-                              f"然后在 Settings 更新 browser_version/sparkle_version",
-                    "raw": resp.text[:200],
-                }
-            else:
-                return {
-                    "ok": True,
-                    "current": {"browser_version": current_bv, "sparkle_version": current_sv},
-                    "x_req_ctx": x_req_ctx,
-                    "is_valid": None,
-                    "detail": f"探测返回 {resp.status_code}（非 200/493，可能 token 失效或网络问题）",
-                    "raw": resp.text[:200],
-                }
+                resp = await hc.get(appcast_url, headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                    "Accept": "application/rss+xml,application/xml,*/*",
+                })
+            if resp.status_code != 200:
+                return {"ok": False, "error": f"appcast 接口 {resp.status_code}",
+                        "current": {"browser_version": current_bv, "sparkle_version": current_sv},
+                        "appcast_url": appcast_url}
+            xml = resp.text
+
+            # 解析 appcast XML（Sparkle 格式）
+            # <sparkle:shortVersionString>1.1.39</sparkle:shortVersionString>
+            # <sparkle:version>10101039</sparkle:version>
+            # <pubDate>Mon, 15 Jun 2026 ...</pubDate>
+            # <enclosure url="...dmg" />
+            latest_bv_m = _re.search(r"<sparkle:shortVersionString>([^<]+)</sparkle:shortVersionString>", xml)
+            latest_sv_m = _re.search(r"<sparkle:version>([^<]+)</sparkle:version>", xml)
+            pubdate_m = _re.search(r"<pubDate>([^<]+)</pubDate>", xml)
+            enclosure_m = _re.search(r'url="([^"]+\.dmg[^"]*)"', xml)
+            # 提取更新说明（title 里的文本）
+            title_m = _re.search(r"<title>([^<]+)</title>", xml)
+            # 第一个 <title> 是 channel 名（如 "tab"），item 的 title 在后面
+            item_title_m = _re.findall(r"<title>([^<]+)</title>", xml)
+
+            latest_bv = latest_bv_m.group(1).strip() if latest_bv_m else None
+            latest_sv = latest_sv_m.group(1).strip() if latest_sv_m else None
+            pubdate = pubdate_m.group(1).strip() if pubdate_m else None
+            download_url = enclosure_m.group(1) if enclosure_m else None
+            # 更新说明取第二个 title（第一个是 channel 名）
+            release_notes = item_title_m[1][:300] if len(item_title_m) > 1 else None
+
+            is_latest = None
+            if latest_bv and latest_sv:
+                is_latest = (str(latest_bv) == str(current_bv)
+                             and str(latest_sv) == str(current_sv))
+
+            return {
+                "ok": True,
+                "current": {"browser_version": current_bv, "sparkle_version": current_sv},
+                "latest": {"browser_version": latest_bv, "sparkle_version": latest_sv},
+                "is_latest": is_latest,
+                "pub_date": pubdate,
+                "download_url": download_url,
+                "release_notes": release_notes,
+                "appcast_url": appcast_url,
+            }
         except Exception as e:
             return {"ok": False, "error": str(e),
                     "current": {"browser_version": current_bv, "sparkle_version": current_sv},
-                    "x_req_ctx": x_req_ctx}
+                    "appcast_url": appcast_url}
 
     # ── 额度查询（验证默认浏览器伪装是否生效 → Pro 5x quota）──
     @r.get("/quota", dependencies=[Depends(admin_dep)])
@@ -525,47 +511,35 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
         else:
             check("默认浏览器标记", "warn", "未开启，按普通用户对待（无 Pro 权益）")
 
-        # 1f. 版本有效性检查（实战探测 x-req-ctx 是否被上游接受）
-        # Tabbit 无公开版本查询 API（/api/v1/version 实测 404，版本检查在桌面端 Sparkle 原生层）
-        # 改用实战探测：用当前 x-req-ctx 发模型列表请求，493=版本过期，200=有效
+        # 1f. 版本同步检查（读 appcast.xml 对比最新版本）
         try:
-            import json as _json
-            tokens_for_ver = _cfg.get("tokens", default=[]) or []
-            ver_token = next((t for t in tokens_for_ver if t.get("enabled", True)), None)
-            if ver_token:
-                vp = ver_token["value"].split("|")
-                v_jwt = vp[0]
-                v_uid = ""
-                try:
-                    v_payload = _json.loads(_base64.urlsafe_b64decode(v_jwt.split(".")[1] + "=="))
-                    v_uid = v_payload.get("id", v_payload.get("sub", ""))
-                except Exception:
-                    pass
-                v_cookies = {"token": v_jwt, "user_id": v_uid, "managed": "tab_browser", "NEXT_LOCALE": "zh"}
-                if len(vp) > 1:
-                    v_cookies["next-auth.session-token"] = vp[1]
-                v_headers = {
-                    "x-req-ctx": _base64.b64encode(f"{browser_version}({sparkle})".encode()).decode(),
-                    "unique-uuid": _gen_unique_uuid(default_browser),
+            import re as _re
+            appcast_url = f"{base_url}/api/v0/upgrade/appcast.xml"
+            async with _httpx.AsyncClient(timeout=8, verify=False) as hc:
+                vr = await hc.get(appcast_url, headers={
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-                }
-                async with _httpx.AsyncClient(timeout=8, verify=False) as hc:
-                    vr = await hc.get(f"{base_url}/proxy/v1/model_config/models?a=0",
-                                      headers=v_headers, cookies=v_cookies)
-                    if vr.status_code == 200:
-                        check("版本有效性", "pass",
-                              f"当前 {browser_version}({sparkle}) x-req-ctx 被上游接受，版本有效")
-                    elif vr.status_code == 493:
-                        check("版本有效性", "fail",
-                              f"版本过期！{browser_version}({sparkle}) 被上游拒绝（493）。"
-                              f"请本机运行 check_tabbit_version.sh 查最新版本，在 Settings 更新")
+                    "Accept": "application/rss+xml,application/xml,*/*",
+                })
+                if vr.status_code == 200:
+                    xml = vr.text
+                    latest_bv_m = _re.search(r"<sparkle:shortVersionString>([^<]+)</sparkle:shortVersionString>", xml)
+                    latest_sv_m = _re.search(r"<sparkle:version>([^<]+)</sparkle:version>", xml)
+                    if latest_bv_m and latest_sv_m:
+                        latest_bv = latest_bv_m.group(1).strip()
+                        latest_sv = latest_sv_m.group(1).strip()
+                        if str(latest_bv) == str(browser_version) and str(latest_sv) == str(sparkle):
+                            check("版本同步", "pass",
+                                  f"当前 {browser_version}({sparkle}) 已是最新（appcast: {latest_bv}({latest_sv})）")
+                        else:
+                            check("版本同步", "warn",
+                                  f"Tabbit 已更新！当前 {browser_version}({sparkle}) → 最新 {latest_bv}({latest_sv})。"
+                                  f"请在 Settings 更新 browser_version/sparkle_version，否则 x-req-ctx 会触发 493")
                     else:
-                        check("版本有效性", "warn",
-                              f"探测返回 {vr.status_code}（非 200/493，可能 token 失效）")
-            else:
-                check("版本有效性", "warn", "无可用 token，无法检测版本")
+                        check("版本同步", "warn", f"appcast 解析失败，原始: {xml[:120]}")
+                else:
+                    check("版本同步", "warn", f"appcast 接口 {vr.status_code}")
         except Exception as e:
-            check("版本有效性", "warn", f"版本检测异常: {e}（请手动用 check_tabbit_version.sh）")
+            check("版本同步", "warn", f"版本检测异常: {e}")
 
         # 2. Token 池
         tokens = _cfg.get("tokens", default=[]) or []
