@@ -947,37 +947,74 @@ function renderQuotaResult(r) {
 }
 
 function renderQuotaCards(q) {
-  // 尝试从多种可能的字段结构里提取额度信息
-  // 常见结构: { quota: { used, total }, ... } 或 { usage: {...}, limit: {...} } 或数组
-  const cards = [];
-  // 递归找 used/total/limit 之类字段
-  const flat = flattenQuota(q);
-  if (flat.length === 0) return '<p class="text-xs text-zinc-500">（未识别到结构化额度字段，看原始响应）</p>';
-  return flat.map(f => `
-    <div class="flex items-center justify-between py-2 border-b border-zinc-800 last:border-0">
-      <span class="text-sm text-zinc-300">${esc(f.label)}</span>
-      <span class="text-sm ${f.ratio >= 0.9 ? 'text-red-400' : f.ratio >= 0.7 ? 'text-yellow-400' : 'text-emerald-400'}">
-        ${esc(f.used)} / ${esc(f.total)}${f.unit ? ' ' + f.unit : ''} <span class="text-zinc-500">(${(f.ratio*100).toFixed(1)}%)</span>
-      </span>
-    </div>`).join('');
+  // Tabbit 额度结构（真机抓包确认）：
+  // { member_level, usage_percentage, remaining_reset_hours, current_cycle_start/end, ... }
+  // member_level: free | pro（默认浏览器伪装 → pro = 5x quota）
+  const level = q.member_level || q.level || '';
+  const isPro = String(level).toLowerCase() === 'pro';
+  const usagePct = parseFloat(String(q.usage_percentage || q.usage || '0').replace('%', '')) || 0;
+  const remainHours = q.remaining_reset_hours ?? q.reset_hours;
+  const cycleStart = q.current_cycle_start || q.cycle_start;
+  const cycleEnd = q.current_cycle_end || q.cycle_end;
+  const couponCount = q.unused_reset_coupon_count ?? q.reset_coupon_count;
+
+  // 会员等级徽章
+  let html = `<div class="flex items-center gap-3 mb-4">
+    <span class="text-xs text-zinc-500">会员等级</span>
+    <span class="text-sm font-semibold px-3 py-1 rounded-full ${isPro ? 'bg-gradient-to-r from-amber-500/20 to-pink-500/20 text-amber-300 border border-amber-500/30' : 'bg-zinc-800 text-zinc-400'}">
+      ${isPro ? '⭐ PRO' : 'FREE'}
+    </span>
+    ${isPro ? '<span class="text-xs text-emerald-400">✓ 默认浏览器伪装生效</span>' : '<span class="text-xs text-zinc-500">未生效（检查 default_browser 开关）</span>'}
+  </div>`;
+
+  // 用量进度条
+  if (usagePct > 0 || q.usage_percentage != null) {
+    const barColor = usagePct >= 90 ? 'bg-red-500' : usagePct >= 70 ? 'bg-yellow-500' : 'bg-emerald-500';
+    const textColor = usagePct >= 90 ? 'text-red-400' : usagePct >= 70 ? 'text-yellow-400' : 'text-emerald-400';
+    html += `
+    <div class="mb-4">
+      <div class="flex items-center justify-between mb-1.5">
+        <span class="text-sm text-zinc-300">本周期用量</span>
+        <span class="text-sm font-medium ${textColor}">${usagePct.toFixed(2)}%</span>
+      </div>
+      <div class="h-2 rounded-full bg-zinc-800 overflow-hidden">
+        <div class="h-full ${barColor} rounded-full transition-all" style="width: ${Math.min(usagePct, 100)}%"></div>
+      </div>
+    </div>`;
+  }
+
+  // 周期信息网格
+  const infoItems = [];
+  if (cycleStart && cycleEnd) infoItems.push(['计费周期', `${cycleStart} ~ ${cycleEnd}`]);
+  if (remainHours != null) infoItems.push(['距下次重置', `${remainHours} 小时`]);
+  if (couponCount != null) infoItems.push(['可用重置券', `${couponCount} 张`]);
+  if (q.user_id) infoItems.push(['账号 ID', q.user_id]);
+  if (infoItems.length) {
+    html += `<div class="grid grid-cols-2 gap-3 mt-4 pt-4 border-t border-zinc-800">
+      ${infoItems.map(([k, v]) => `
+        <div>
+          <div class="text-xs text-zinc-500 mb-0.5">${esc(k)}</div>
+          <div class="text-sm text-zinc-200 font-mono break-all">${esc(String(v))}</div>
+        </div>`).join('')}
+    </div>`;
+  }
+  return html || '<p class="text-xs text-zinc-500">（未识别到结构化额度字段，看原始响应）</p>';
 }
 
 function flattenQuota(obj, prefix = '') {
-  // 从嵌套结构里提取 { used, total } 或 { usage, limit } 配对
+  // 兜底：递归找 used/total 配对（适配未来结构变化）
   const out = [];
   if (!obj || typeof obj !== 'object') return out;
   if (Array.isArray(obj)) {
     obj.forEach((v, i) => out.push(...flattenQuota(v, `${prefix}[${i}]`)));
     return out;
   }
-  // 命中 used/total 或 usage/limit 配对
   const used = obj.used ?? obj.usage ?? obj.consume ?? obj.consumed;
   const total = obj.total ?? obj.limit ?? obj.quota ?? obj.max;
   if (used != null && total != null) {
     const ratio = total > 0 ? (used / total) : 0;
     out.push({ label: prefix || '额度', used, total, ratio, unit: obj.unit || '' });
   }
-  // 递归子对象
   for (const k of Object.keys(obj)) {
     if (typeof obj[k] === 'object' && obj[k] !== null) {
       out.push(...flattenQuota(obj[k], prefix ? `${prefix}.${k}` : k));
