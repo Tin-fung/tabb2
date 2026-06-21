@@ -378,12 +378,74 @@ async def test_body_variants(client):
     await try_body("加client_info", b)
 
 
+async def probe_endpoints(client):
+    """探测真实 chat endpoint，并看 /chat/send 的 493 是不是 endpoint 错了"""
+    print("\n" + "="*60)
+    print("[8] 探测 chat 相关 endpoint")
+    print("="*60)
+    # 先建 session
+    router_state = ["", {"children": ["chat", {"children": [["id","new","d"], {"children": ["__PAGE__",{},None,"refetch"]}, None, None]}, None, None]}, None, None]
+    h = {**base_headers("/chat/new"), "rsc": "1", "next-router-state-tree": urllib.parse.quote(json.dumps(router_state))}
+    r = await client.get(f"{BASE_URL}/chat/new", params={"_rsc":"auto"}, headers=h, cookies=cookies())
+    m = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", r.text)
+    sid = m.group(1) if m else None
+    print(f"  session_id={sid}")
+
+    content = "hi"
+    base_body = {
+        "chat_session_id": sid, "content": content, "selected_model": "best-model",
+        "agent_mode": False, "metadatas": {"html_content": f"<p>{content}</p>"},
+        "entity": {"key": hashlib.md5(b"").hexdigest(), "extras": {"type": "tab", "url": ""}},
+    }
+    # 试一批可能的 chat endpoint
+    endpoints = [
+        "/chat/send",
+        "/api/v0/chat/send",
+        "/api/v0/chat/messages",
+        "/api/v0/chat/completions",
+        "/api/v0/messages",
+        "/api/v0/chat",
+        "/api/chat/send",
+        "/v0/chat/send",
+    ]
+    for ep in endpoints:
+        sh = {**base_headers(f"/chat/{sid}"), "Accept":"text/event-stream", "Content-Type":"application/json"}
+        try:
+            async with client.stream("POST", f"{BASE_URL}{ep}", json=base_body, headers=sh, cookies=cookies(), timeout=20) as resp:
+                got = False; err = ""; first_line = ""
+                async for line in resp.aiter_lines():
+                    if not first_line and line:
+                        first_line = line[:100]
+                    if line.startswith("data:"):
+                        try:
+                            d = json.loads(line[5:].strip())
+                            if d.get("code") == 493: err = "493"
+                            elif d.get("code"): err = f"code={d.get('code')}"
+                        except: pass
+                    if "message_chunk" in line: got = True
+                mark = "🎉" if got else "  "
+                status_info = f"{resp.status_code}"
+                print(f"  {mark} POST {ep:30} -> {status_info} {('✅成功' if got else (err or first_line or '空'))[:60]}")
+        except Exception as e:
+            print(f"     POST {ep:30} -> EXC {str(e)[:40]}")
+
+    # 再试 GET 看 /chat/send 是不是有文档/ OPTIONS 看允许的方法
+    print("\n  --- /chat/send 方法探测 ---")
+    for method in ["GET", "OPTIONS", "HEAD"]:
+        try:
+            r2 = await client.request(method, f"{BASE_URL}/chat/send", headers=base_headers("/chat/send"), cookies=cookies(), timeout=15)
+            allow = r2.headers.get("allow", "")
+            print(f"     {method:8} -> {r2.status_code}  allow={allow}  body={r2.text[:80]!r}")
+        except Exception as e:
+            print(f"     {method:8} -> EXC {str(e)[:40]}")
+
+
 async def main():
     token_str = load_token()
     parse_token(token_str)
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(connect=15, read=60, write=15, pool=15), follow_redirects=False, verify=False) as client:
-        await test_body_variants(client)
+        await probe_endpoints(client)
 
         print("\n" + "="*60)
         print("诊断完成。把以上完整输出贴给本仙女。")
