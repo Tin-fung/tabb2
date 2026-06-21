@@ -16,6 +16,7 @@ from core.config import ConfigManager
 from core.tabbit_client import TabbitClient, MODEL_MAP
 from core.token_manager import TokenManager
 from core.log_store import LogStore, LogEntry
+from core.model_registry import get_registry
 from core.claude_compat import (
     random_trigger_signal,
     map_claude_to_content,
@@ -54,18 +55,31 @@ def init(token_manager: TokenManager, config: ConfigManager, log_store: LogStore
 
 def _resolve_tabbit_model(model: str) -> str:
     """将请求中的模型名映射到 Tabbit 模型"""
-    # 精确匹配
+    # 优先用动态模型注册表
+    registry = get_registry()
+    if registry and registry.ready:
+        # 精确匹配动态清单
+        if registry.has_alias(model):
+            return registry.resolve(model)
+        # Claude 模型名 → best → 动态解析
+        for prefix, target in CLAUDE_MODEL_MAP.items():
+            if model.startswith(prefix):
+                return registry.resolve(target)
+        # config 默认模型
+        default = _cfg.get("claude", "default_model") if _cfg else None
+        if default and registry.has_alias(default):
+            return registry.resolve(default)
+        return registry.resolve(model)  # 兜底 Default
+    # 动态注册表不可用时，用静态 MODEL_MAP
     if model in MODEL_MAP:
         return MODEL_MAP[model]
-    # Claude 模型名映射
     for prefix, target in CLAUDE_MODEL_MAP.items():
         if model.startswith(prefix):
             return MODEL_MAP.get(target, "Default")
-    # 从 config 中读取默认模型
     default = _cfg.get("claude", "default_model") if _cfg else None
     if default and default in MODEL_MAP:
         return MODEL_MAP[default]
-    return "最佳"
+    return "Default"
 
 
 async def _get_client_and_token(

@@ -11,6 +11,7 @@ from core.tabbit_client import TabbitClient, MODEL_MAP
 from core.token_manager import TokenManager
 from core.log_store import LogStore, LogEntry
 from core.config import ConfigManager
+from core.model_registry import get_registry
 
 logger = logging.getLogger("tabbit2openai")
 
@@ -145,7 +146,12 @@ async def chat_completions(
     req: ChatCompletionRequest, authorization: str = Header(None)
 ):
     client, token_name, token_id = await _get_client_and_token(authorization)
-    tabbit_model = MODEL_MAP.get(req.model.lower(), "Default")
+    # 优先用动态模型注册表，未命中用静态 MODEL_MAP 兜底
+    registry = get_registry()
+    if registry and registry.ready:
+        tabbit_model = registry.resolve(req.model)
+    else:
+        tabbit_model = MODEL_MAP.get(req.model.lower(), "Default")
     content = _build_content(req.messages)
 
     try:
@@ -226,6 +232,13 @@ async def chat_completions(
 
 @router.get("/v1/models")
 async def list_models():
+    # 优先返回动态拉取的模型清单
+    registry = get_registry()
+    if registry and registry.ready:
+        models = registry.list_models()
+        if models:
+            return {"object": "list", "data": models}
+    # 兜底：静态 MODEL_MAP
     return {
         "object": "list",
         "data": [

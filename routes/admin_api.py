@@ -283,6 +283,32 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             _logs.resize(req.max_entries)
         return {"ok": True}
 
+    # ── 模型清单（动态拉取）──
+
+    @r.post("/models/refresh", dependencies=[Depends(admin_dep)])
+    async def refresh_models():
+        """手动刷新动态模型清单"""
+        from core.model_registry import get_registry
+        registry = get_registry()
+        if not registry:
+            raise HTTPException(status_code=503, detail="model registry not initialized")
+        ok = await registry.refresh(force=True)
+        models = registry.list_models() if ok else []
+        return {"ok": ok, "count": len(models), "models": models}
+
+    @r.get("/models", dependencies=[Depends(admin_dep)])
+    async def admin_list_models():
+        """查看当前模型清单（动态 + 缓存状态）"""
+        from core.model_registry import get_registry
+        registry = get_registry()
+        if not registry:
+            return {"ready": False, "models": []}
+        return {
+            "ready": registry.ready,
+            "count": len(registry.list_models()),
+            "models": registry.list_models(),
+        }
+
     # ── Password ──
 
     @r.put("/password", dependencies=[Depends(admin_dep)])

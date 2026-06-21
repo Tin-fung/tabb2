@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from core.config import ConfigManager
 from core.token_manager import TokenManager
 from core.log_store import LogStore
+from core.model_registry import init_registry, get_registry
 from routes import openai_compat, admin_api, claude_api
 
 logging.basicConfig(
@@ -22,6 +23,8 @@ logger = logging.getLogger("tabbit2openai")
 cfg = ConfigManager()
 token_manager = TokenManager(cfg)
 log_store = LogStore(max_entries=cfg.get("logging", "max_entries", default=500))
+# 动态模型注册表（从上游拉取真实模型清单）
+model_registry = init_registry(cfg.get("tabbit", "base_url", default="https://web.tabbit.ai"))
 
 # ── 初始化路由模块 ──
 openai_compat.init(token_manager, cfg, log_store)
@@ -36,6 +39,8 @@ async def lifespan(app: FastAPI):
         len(cfg.get("tokens", default=[])),
         cfg.get("server", "port", default=8800),
     )
+    # 启动时拉取动态模型清单（失败也不阻塞启动，用 MODEL_MAP 兜底）
+    await model_registry.refresh()
     yield
     await token_manager.close_all()
 
