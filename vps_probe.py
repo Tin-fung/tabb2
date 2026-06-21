@@ -179,14 +179,86 @@ async def probe_account(client):
             print(f"  {p:35} -> EXC {str(e)[:40]}")
 
 
+async def get_models_full(client):
+    """拿 /api/v0/chat/models 完整响应——这是不报493的接口，含真实模型清单"""
+    print("\n" + "="*60)
+    print("[4] /api/v0/chat/models 完整响应（不报493的对照接口）")
+    print("="*60)
+    r = await client.get(f"{BASE_URL}/api/v0/chat/models", headers=base_headers("/newtab"), cookies=cookies(), timeout=15)
+    print(f"  status={r.status_code}")
+    try:
+        data = r.json()
+        print(f"  完整 JSON:")
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+    except Exception:
+        print(f"  原始: {r.text[:1500]}")
+
+
+async def test_send_variants(client):
+    """对照实验：用不同 cookie/header 组合打 /chat/send，定位 493 触发点"""
+    print("\n" + "="*60)
+    print("[5] /chat/send cookie/header 对照实验")
+    print("="*60)
+
+    async def make_session():
+        router_state = ["", {"children": ["chat", {"children": [["id","new","d"], {"children": ["__PAGE__",{},None,"refetch"]}, None, None]}, None, None]}, None, None]
+        h = {**base_headers("/chat/new"), "rsc": "1", "next-router-state-tree": urllib.parse.quote(json.dumps(router_state))}
+        r = await client.get(f"{BASE_URL}/chat/new", params={"_rsc":"auto"}, headers=h, cookies=cookies())
+        m = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", r.text)
+        return m.group(1) if m else None
+
+    async def try_send(label, hdrs, ckies):
+        sid = await make_session()
+        if not sid:
+            print(f"  {label:30} -> NO_SESSION")
+            return
+        content = "hi"
+        payload = {"chat_session_id": sid, "content": content, "selected_model": "最佳",
+                   "agent_mode": False, "metadatas": {"html_content": f"<p>{content}</p>"},
+                   "entity": {"key": hashlib.md5(b"").hexdigest(), "extras": {"type":"tab","url":""}}}
+        sh = {**hdrs, "Accept":"text/event-stream", "Content-Type":"application/json"}
+        try:
+            async with client.stream("POST", f"{BASE_URL}/chat/send", json=payload, headers=sh, cookies=ckies) as resp:
+                got = False; err = ""
+                async for line in resp.aiter_lines():
+                    if line.startswith("data:"):
+                        try:
+                            d = json.loads(line[5:].strip())
+                            if d.get("code") == 493: err = "493"
+                            elif d.get("code"): err = f"code={d.get('code')}"
+                        except: pass
+                    if "message_chunk" in line: got = True
+                print(f"  {label:30} -> {'🎉✅成功' if got else (err or '空')}")
+        except Exception as e:
+            print(f"  {label:30} -> EXC {str(e)[:40]}")
+
+    base = base_headers("/chat/x")
+    # 变体1：完整 cookie（基准，预期 493）
+    await try_send("完整cookie(基准)", base, cookies())
+    # 变体2：不带 next-auth
+    c2 = {k:v for k,v in cookies().items() if k != "next-auth.session-token"}
+    await try_send("不带next-auth", base, c2)
+    # 变体3：只带 token + user_id
+    c3 = {"token": JWT, "user_id": USER_ID}
+    await try_send("只token+user_id", base, c3)
+    # 变体4：加额外可能版本相关 cookie
+    c4 = {**cookies(), "tab_version": "1.1.39", "browser_version": "1.1.39", "version": "1.1.39"}
+    await try_send("加版本cookie", base, c4)
+    # 变体5：加 x-tab-version 头
+    h5 = {**base, "x-tab-version": "1.1.39", "x-tabbit-version": "1.1.39", "x-browser-version": "1.1.39"}
+    await try_send("加x-tab-version头", h5, cookies())
+    # 变体6：模拟真实 Tabbit 浏览器可能的头组合
+    h6 = {**base, "origin": BASE_URL, "x-requested-with": "XMLHttpRequest"}
+    await try_send("加origin+x-requested-with", h6, cookies())
+
+
 async def main():
     token_str = load_token()
     parse_token(token_str)
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(connect=15, read=60, write=15, pool=15), follow_redirects=False, verify=False) as client:
-        await dump_493_detail(client)
-        await try_consistency_versions(client)
-        await probe_account(client)
+        await get_models_full(client)
+        await test_send_variants(client)
 
         print("\n" + "="*60)
         print("诊断完成。把以上完整输出贴给本仙女。")
