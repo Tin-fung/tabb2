@@ -30,7 +30,7 @@ EXPOSE 8800
 
 # 健康检查
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8800/v1/models')" || exit 1
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8800/health')" || exit 1
 
 # 使用 entrypoint 脚本启动
 ENTRYPOINT ["./docker-entrypoint.sh"]

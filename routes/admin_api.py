@@ -328,4 +328,142 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
     ):
         return _logs.query(status=status, page=page, page_size=page_size)
 
+    # ── 诊断（深度健康检查，固化 493/492 排查经验）──
+
+    @r.get("/diagnose", dependencies=[Depends(admin_dep)])
+    async def diagnose():
+        """深度诊断：配置/连接/版本/协议/模型/token 全链路自检"""
+        import httpx as _httpx
+        import base64 as _base64
+
+        report = {"checks": [], "summary": {"total": 0, "pass": 0, "warn": 0, "fail": 0}}
+
+        def check(name, status, detail=""):
+            report["checks"].append({"name": name, "status": status, "detail": detail})
+            report["summary"]["total"] += 1
+            report["summary"][status] += 1
+
+        # 1. 配置检查
+        tabbit_cfg = _cfg.get("tabbit", default={}) or {}
+        base_url = tabbit_cfg.get("base_url", "")
+        browser_version = tabbit_cfg.get("browser_version", "")
+        sparkle = tabbit_cfg.get("sparkle_version")
+
+        # 1a. 域名是否新协议
+        if "web.tabbit.ai" in base_url:
+            check("域名配置", "pass", f"base_url={base_url}")
+        elif "tabbitbrowser.com" in base_url:
+            check("域名配置", "fail", f"旧域名 {base_url} 已废弃，会触发 493/492，应为 web.tabbit.ai")
+        else:
+            check("域名配置", "warn", f"非默认域名: {base_url}")
+
+        # 1b. 版本号是否完整三段（x-req-ctx 编码需要）
+        if browser_version and browser_version.count(".") >= 2 and browser_version not in ("1.1", "145"):
+            check("版本号配置", "pass", f"browser_version={browser_version}")
+        else:
+            check("版本号配置", "fail", f"版本号 {browser_version!r} 不完整，应为 1.1.39（x-req-ctx 编码需要完整三段）")
+
+        # 1c. sparkle_version
+        if sparkle:
+            check("sparkle配置", "pass", f"sparkle_version={sparkle}")
+        else:
+            check("sparkle配置", "fail", "sparkle_version 缺失，x-req-ctx 编码会出错")
+
+        # 1d. x-req-ctx 编码验证
+        try:
+            expected = _base64.b64encode(f"{browser_version}({sparkle})".encode()).decode()
+            check("x-req-ctx编码", "pass", f"x-req-ctx={expected}")
+        except Exception as e:
+            check("x-req-ctx编码", "fail", f"编码失败: {e}")
+
+        # 2. Token 池
+        tokens = _cfg.get("tokens", default=[]) or []
+        if not tokens:
+            check("Token池", "fail", "无 token，服务无法工作")
+        else:
+            active = [t for t in tokens if t.get("enabled", True) and t.get("status") != "cooldown"]
+            check("Token池", "pass" if active else "warn",
+                  f"共 {len(tokens)} 个，可用 {len(active)} 个")
+            for t in tokens[:5]:
+                check(f"Token[{t.get('name','?')}]",
+                      "pass" if t.get("status") != "cooldown" else "warn",
+                      f"status={t.get('status','?')} errors={t.get('error_count',0)} total={t.get('total_requests',0)}")
+
+        # 3. 上游连通性 + 协议自检（用第一个可用 token）
+        if tokens:
+            token_info = next((t for t in tokens if t.get("enabled", True)), tokens[0])
+            parts = token_info["value"].split("|")
+            jwt_token = parts[0]
+            user_id = ""
+            try:
+                import json as _json
+                payload = _json.loads(_base64.urlsafe_b64decode(jwt_token.split(".")[1] + "=="))
+                user_id = payload.get("id", payload.get("sub", ""))
+            except Exception:
+                pass
+
+            headers = {
+                "x-req-ctx": _base64.b64encode(f"{browser_version}({sparkle})".encode()).decode(),
+                "unique-uuid": str(__import__("uuid").uuid4()),
+                "x-chrome-id-consistency-request": f"version=1,client_id={tabbit_cfg.get('client_id','')},device_id=test,sync_account_id={user_id},signin_mode=all_accounts,signout_mode=show_confirmation",
+            }
+            cookies = {"token": jwt_token, "user_id": user_id, "managed": "tab_browser", "NEXT_LOCALE": "zh"}
+            if len(parts) > 1:
+                cookies["next-auth.session-token"] = parts[1]
+
+            # 3a. 模型清单接口
+            try:
+                async with _httpx.AsyncClient(timeout=10, verify=False) as hc:
+                    resp = await hc.get(f"{base_url}/api/v0/chat/models", headers=headers, cookies=cookies)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        count = sum(len(v) for v in (data.get("supported_models") or {}).values())
+                        check("上游连通(模型接口)", "pass", f"/api/v0/chat/models 返回 {count} 个模型")
+                    else:
+                        check("上游连通(模型接口)", "fail", f"模型接口 {resp.status_code}: {resp.text[:100]}")
+            except Exception as e:
+                check("上游连通(模型接口)", "fail", f"连接失败: {e}")
+
+            # 3b. 建会话测试
+            try:
+                async with _httpx.AsyncClient(timeout=15, verify=False, follow_redirects=True) as hc:
+                    import urllib.parse as _up, json as _json
+                    router_state = ["",{"children":["chat",{"children":[["id","new","d"],{"children":["__PAGE__",{},None,"refetch"]},None,None]},None,None]},None,None]
+                    h2 = {**headers, "rsc":"1", "next-router-state-tree": _up.quote(_json.dumps(router_state)),
+                          "referer": f"{base_url}/chat/new"}
+                    resp = await hc.get(f"{base_url}/chat/new", params={"_rsc":"auto"}, headers=h2, cookies=cookies)
+                    import re as _re
+                    m = _re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", resp.text)
+                    if m:
+                        check("建会话", "pass", f"session_id={m.group(0)}")
+                    else:
+                        check("建会话", "fail", f"未提取到 session_id，status={resp.status_code}")
+            except Exception as e:
+                check("建会话", "fail", f"失败: {e}")
+
+        # 4. 动态模型注册表
+        from core.model_registry import get_registry
+        registry = get_registry()
+        if registry and registry.ready:
+            check("模型注册表", "pass", f"已缓存 {len(registry.list_models())} 个模型")
+        elif registry:
+            check("模型注册表", "warn", "未就绪（拉取失败或未初始化），用静态 MODEL_MAP 兜底")
+        else:
+            check("模型注册表", "warn", "未初始化")
+
+        # 5. proxy api_key
+        api_key = _cfg.get("proxy", "api_key", default="")
+        check("Proxy API Key", "pass" if api_key else "warn",
+              "已设置" if api_key else "未设置（任何请求都能访问）")
+
+        # 汇总结论
+        s = report["summary"]
+        if s["fail"] > 0:
+            report["summary"]["overall"] = "fail"
+        elif s["warn"] > 0:
+            report["summary"]["overall"] = "warn"
+        else:
+            report["summary"]["overall"] = "pass"
+        return report
+
     router = r

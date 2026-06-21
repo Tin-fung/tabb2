@@ -1,4 +1,8 @@
-# 诊断/调试脚本，不入仓库
+# 临时调试脚本
 _diag.py
-_probe.py
-_probe2.py
+_probe*.py
+vps_probe.py
+
+# Python
+__pycache__/
+*.pyc

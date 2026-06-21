@@ -62,6 +62,22 @@ async def admin_page():
     return FileResponse(str(static_dir / "index.html"))
 
 
+@app.get("/health")
+async def health():
+    """轻量健康检查（无需鉴权，供 Docker healthcheck / 监控用）
+
+    只检查服务是否存活 + 核心组件是否初始化。
+    深度诊断走 /api/admin/diagnose（需鉴权）。
+    """
+    from core.model_registry import get_registry
+    registry = get_registry()
+    return {
+        "status": "ok",
+        "tokens": len(cfg.get("tokens", default=[])),
+        "model_registry_ready": bool(registry and registry.ready),
+    }
+
+
 if __name__ == "__main__":
     import urllib3
 
