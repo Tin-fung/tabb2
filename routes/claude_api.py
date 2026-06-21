@@ -158,6 +158,8 @@ async def _stream_claude_response(
     body: dict,
     token_name: str,
     token_id: str,
+    references: list | None = None,
+    task_name: str = "chat",
 ):
     """流式生成 Claude SSE 响应"""
     request_id = uuid.uuid4().hex[:12]
@@ -284,7 +286,8 @@ async def claude_messages(request: Request):
     if is_stream:
         return StreamingResponse(
             _stream_claude_response(
-                client, session_id, content, tabbit_model, body, token_name, token_id
+                client, session_id, content, tabbit_model, body, token_name, token_id,
+                references=references, task_name=task_name,
             ),
             media_type="text/event-stream",
             headers={

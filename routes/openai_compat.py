@@ -129,7 +129,7 @@ async def _get_client_and_token(
     return _fallback_clients[token], "bearer", ""
 
 
-async def _stream_handler(client, session_id, content, tabbit_model, req_model, completion_id, token_name, token_id):
+async def _stream_handler(client, session_id, content, tabbit_model, req_model, completion_id, token_name, token_id, references=None, task_name="chat"):
     start = time.time()
     error_msg = ""
     try:
@@ -221,6 +221,8 @@ async def chat_completions(
                 completion_id,
                 token_name,
                 token_id,
+                references=references,
+                task_name=task_name,
             ),
             media_type="text/event-stream",
         )
