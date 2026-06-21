@@ -475,6 +475,24 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             except Exception as e:
                 check("建会话", "fail", f"失败: {e}")
 
+            # 3c. 额度查询（验证默认浏览器伪装是否生效 → Pro 5x quota）
+            try:
+                async with _httpx.AsyncClient(timeout=10, verify=False, follow_redirects=True) as hc:
+                    quota_uuid = _gen_unique_uuid(tabbit_cfg.get("default_browser", True), time.time() + server_time_offset)
+                    h3 = {**headers, "unique-uuid": quota_uuid, "referer": f"{base_url}/newtab"}
+                    resp = await hc.get(f"{base_url}/api/commerce/quota/v1/usage",
+                                        params={"user_id": user_id, "timezone": "Asia/Shanghai"},
+                                        headers=h3, cookies=cookies)
+                    if resp.status_code == 200:
+                        qdata = resp.json()
+                        # 提取额度信息（结构因版本而异，尽量取关键字段）
+                        detail = json.dumps(qdata, ensure_ascii=False)[:200]
+                        check("额度查询(会员验证)", "pass", f"unique-uuid第5位='1'伪装Pro，响应: {detail}")
+                    else:
+                        check("额度查询(会员验证)", "warn", f"额度接口 {resp.status_code}: {resp.text[:100]}")
+            except Exception as e:
+                check("额度查询(会员验证)", "fail", f"失败: {e}")
+
         # 4. 动态模型注册表
         from core.model_registry import get_registry
         registry = get_registry()

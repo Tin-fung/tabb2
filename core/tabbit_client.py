@@ -130,16 +130,12 @@ class TabbitClient:
         """返回校正后的服务器时间戳。未同步时退回本地时间。"""
         return time.time() + self._server_time_offset
 
-    def _get_headers(self, referer_path: str = "/newtab") -> dict:
+    def _get_headers(self, referer_path: str = "/newtab", with_uuid: bool = False) -> dict:
         # x-req-ctx 是版本校验关键头（base64("版本(sparkle_version)")），缺则 493
         x_req_ctx = base64.b64encode(
             f"{self.browser_version}({self.sparkle_version})".encode()
         ).decode()
-        # unique-uuid 编码"是否默认浏览器"状态 + 时间戳，后端据此发 Pro 会员权益。
-        # 算法移植自 web 端 eN()：第 5 位 "1"=默认浏览器，8 个固定位填当前时间戳。
-        # 时间戳用上游服务器时间（从 Date 头同步），规避 vps 时钟漂移。
-        unique_uuid = _gen_unique_uuid(self.default_browser, self._server_ts())
-        return {
+        headers = {
             "User-Agent": f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
             "sec-ch-ua": '"Chromium";v="148", "Tabbit";v="148", "Not/A)Brand";v="99"',
             "sec-ch-ua-mobile": "?0",
@@ -150,10 +146,17 @@ class TabbitClient:
                 "signin_mode=all_accounts,signout_mode=show_confirmation"
             ),
             "x-req-ctx": x_req_ctx,
-            "unique-uuid": unique_uuid,
             "origin": self.base_url,
             "referer": f"{self.base_url}{referer_path}",
         }
+        # unique-uuid 编码"是否默认浏览器"状态 + 时间戳，后端据此发 Pro 会员权益。
+        # 算法移植自 web 端 eN()：第 5 位 "1"=默认浏览器，8 个固定位填当前时间戳。
+        # 时间戳用上游服务器时间（从 Date 头同步），规避 vps 时钟漂移。
+        # 真机抓包确认：只有聊天(/api/v1/chat/completion) + 额度(/api/commerce/quota/v1/usage)
+        # 接口带 unique-uuid，其他接口不带。精确复刻真机行为。
+        if with_uuid:
+            headers["unique-uuid"] = _gen_unique_uuid(self.default_browser, self._server_ts())
+        return headers
 
     def _get_cookies(self) -> dict:
         cookies = {
@@ -220,6 +223,25 @@ class TabbitClient:
             return uuids[0]
         raise Exception("Failed to extract chat session_id from response")
 
+    async def get_quota_usage(self) -> dict:
+        """查询当前账号额度使用情况（真机抓包确认带 unique-uuid）。
+
+        /api/commerce/quota/v1/usage 是会员权益判定接口，unique-uuid 第5位
+        编码默认浏览器状态，后端据此发 Pro 权益（5x quota）。
+        可用于验证伪装是否生效。
+        """
+        headers = self._get_headers("/newtab", with_uuid=True)
+        resp = await self.client.get(
+            f"{self.base_url}/api/commerce/quota/v1/usage",
+            params={"user_id": self.user_id, "timezone": "Asia/Shanghai"},
+            headers=headers,
+            cookies=self._get_cookies(),
+        )
+        self._sync_server_time(resp)
+        if resp.status_code != 200:
+            raise Exception(f"quota query failed: {resp.status_code} {resp.text[:200]}")
+        return resp.json()
+
     async def send_message(
         self, session_id: str, content: str, model: str
     ) -> AsyncGenerator[dict, None]:
@@ -245,7 +267,7 @@ class TabbitClient:
         }
 
         headers = {
-            **self._get_headers(f"/session/{session_id}"),
+            **self._get_headers(f"/session/{session_id}", with_uuid=True),
             "accept": "text/event-stream",
             "Content-Type": "application/json",
         }
