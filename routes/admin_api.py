@@ -344,6 +344,8 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
         版本过期会导致 x-req-ctx 校验失败触发 493。
         """
         import json as _json
+        import base64 as _base64
+        import httpx as _httpx
         tabbit_cfg = _cfg.get("tabbit", default={}) or {}
         current_bv = tabbit_cfg.get("browser_version", "")
         current_sv = tabbit_cfg.get("sparkle_version")
@@ -373,7 +375,6 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
         }
         try:
-            import httpx as _httpx
             async with _httpx.AsyncClient(timeout=8, verify=False) as hc:
                 resp = await hc.get(f"{base_url}/api/v1/version", headers=headers, cookies=cookies)
             if resp.status_code != 200:

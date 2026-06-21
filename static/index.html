@@ -65,8 +65,16 @@ async function api(path, opts = {}) {
     render();
     throw new Error('unauthorized');
   }
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.detail || 'request failed');
+  // 防御：非 JSON 响应（如 500 错误页）不直接 res.json() 炸掉
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); }
+  catch (e) {
+    // 非 JSON，提取状态码 + 响应片段给出可读错误
+    const snippet = text.slice(0, 200).replace(/\s+/g, ' ').trim();
+    throw new Error(`HTTP ${res.status}: ${snippet || res.statusText}`);
+  }
+  if (!res.ok) throw new Error(data.detail || data.error || `HTTP ${res.status}`);
   return data;
 }
 
