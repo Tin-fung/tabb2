@@ -64,14 +64,21 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
 
 
-def _build_content(messages: list[ChatMessage]) -> str:
+def _build_content(messages: list[ChatMessage]) -> tuple[str, list, str]:
+    """构建发送内容，返回 (content, references, task_name)。
+
+    超长时自动分流：System段+最近消息留 content，旧历史入 references，
+    绕过 20421 网关限制（与 Claude 端点共用 build_content_with_refs）。
+    """
+    from core.claude_compat import build_content_with_refs
     system_prompt = _cfg.get("proxy", "system_prompt") if _cfg else ""
     if len(messages) == 1 and not system_prompt:
         # 单条短消息快速路径，但仍要过截断闸（单条也可能超长，如贴大段代码）
         text = messages[0].text_content()
         if len(text) > MAX_CONTENT_LEN:
+            # 单条无历史可分流，硬压缩兜底
             text = compress_content([text], MAX_CONTENT_LEN)
-        return text
+        return text, [], "chat"
     parts = []
     if system_prompt:
         parts.append(f"[System]: {system_prompt}")
@@ -81,11 +88,10 @@ def _build_content(messages: list[ChatMessage]) -> str:
         )
         parts.append(f"[{label}]: {m.text_content()}")
     text = "\n\n".join(parts) + "\n\n[Assistant]:"
-    # 截断闸：与 Claude 端点共用同一套压缩逻辑，避免长对话裸奔触发上游 492。
-    # 2026-06 实测上游边界 ~20421 字符（见 claude_compat.MAX_CONTENT_LEN 注释）。
+    # 超长分流：content 过网关，旧历史入 references 绕过限制
     if len(text) > MAX_CONTENT_LEN:
-        text = compress_content(parts, MAX_CONTENT_LEN)
-    return text
+        return build_content_with_refs(parts + ["[Assistant]:"], MAX_CONTENT_LEN)
+    return text, [], "chat"
 
 
 async def _get_client_and_token(
@@ -131,7 +137,7 @@ async def _stream_handler(client, session_id, content, tabbit_model, req_model, 
             f"data: {json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': ''}, 'finish_reason': None}]})}\n\n"
         )
 
-        async for event in client.send_message(session_id, content, tabbit_model):
+        async for event in client.send_message(session_id, content, tabbit_model, references=references, task_name=task_name):
             et, ed = event["event"], event["data"]
             if et == "message_chunk" and "content" in ed:
                 chunk = {
@@ -184,7 +190,7 @@ async def chat_completions(
         tabbit_model = registry.resolve(req.model)
     else:
         tabbit_model = MODEL_MAP.get(req.model.lower(), "Default")
-    content = _build_content(req.messages)
+    content, references, task_name = _build_content(req.messages)
 
     try:
         session_id = await client.create_chat_session()
@@ -224,7 +230,7 @@ async def chat_completions(
     full_text = ""
     error_msg = ""
     try:
-        async for event in client.send_message(session_id, content, tabbit_model):
+        async for event in client.send_message(session_id, content, tabbit_model, references=references, task_name=task_name):
             if event["event"] == "message_chunk":
                 full_text += event["data"].get("content", "")
         if token_id:

@@ -243,12 +243,18 @@ class TabbitClient:
         return resp.json()
 
     async def send_message(
-        self, session_id: str, content: str, model: str
+        self, session_id: str, content: str, model: str,
+        references: list | None = None, task_name: str = "chat",
     ) -> AsyncGenerator[dict, None]:
         """向会话发送消息，流式返回上游 SSE 事件
 
         真实 endpoint: POST /api/v1/chat/completion（抓包确认）
         x-req-ctx 头是版本校验关键，缺则 493。
+
+        references: 超长内容分流通道。网关只校验 content 主字段(≤20421)，
+            references[].content 不受限制（实测模型可读到 7万+字符）。
+            传非空 list 即启用分流，绕过 2万字符天花板。
+        task_name: "chat"(默认) / "script"。分流时仍用 chat 保持语义。
         """
         payload = {
             "chat_session_id": session_id,
@@ -256,10 +262,10 @@ class TabbitClient:
             "content": content,
             "selected_model": model,
             "parallel_group_id": None,
-            "task_name": "chat",
+            "task_name": task_name,
             "agent_mode": False,
             "metadatas": {"html_content": f"<p>{content}</p>"},
-            "references": [],
+            "references": references or [],
             "entity": {
                 "key": hashlib.md5(b"").hexdigest(),
                 "extras": {"type": "tab", "url": ""},

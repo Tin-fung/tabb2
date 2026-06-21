@@ -228,10 +228,15 @@ def normalize_blocks(
 
 def map_claude_to_content(
     body: dict, trigger_signal: str | None = None
-) -> str:
+) -> tuple[str, list, str]:
     """
-    将完整的 Claude Messages API 请求转换为单条 Tabbit 消息文本。
-    包含系统提示、工具 prompt、消息历史。
+    将完整的 Claude Messages API 请求转换为 Tabbit 消息。
+
+    返回 (content, references, task_name)：
+    - 短请求：content=全文, references=[], task_name="chat"
+    - 超长请求：content=System段+最近消息(≤MAX_CONTENT_LEN),
+                references=[{type:dom, content:旧历史}], task_name="chat"
+                （references 绕过网关 20421 限制，实测模型可读到 7万+字符）
     """
     parts = []
 
@@ -280,12 +285,66 @@ def map_claude_to_content(
 
     text = "\n\n".join(parts)
 
-    # 5. 超长压缩：上游 /api/v1/chat/completion 对超长 content 返回 492
-    # Claude Code 的 tools 定义 + 长历史可能达 15 万字符，需压缩到安全阈值内
+    # 5. 超长分流：content 主字段过网关(≤MAX_CONTENT_LEN)，旧历史入 references 绕过限制
     if len(text) > MAX_CONTENT_LEN:
-        text = compress_content(parts, MAX_CONTENT_LEN)
+        return build_content_with_refs(parts, MAX_CONTENT_LEN)
 
-    return text
+    return text, [], "chat"
+
+
+def build_content_with_refs(parts: list[str], max_len: int) -> tuple[str, list, str]:
+    """超长内容分流：System段+最近消息留 content，旧历史入 references。
+
+    实测（scripts/probe_bypass_verify.py）：references[].content 不受网关 20421
+    限制，模型能读到埋在 7万字符深处的暗号。据此把旧历史转移到 references，
+    突破 2万字符天花板，释放长上下文模型（GLM-5.1/GPT-5.5）的真实能力。
+
+    返回 (content, references, task_name)。
+    """
+    # 区分 System 段（含 tools，必须留 content 供模型直接看 schema）和消息段
+    assistant_hint = "[Assistant]:"
+    system_parts = [p for p in parts if p.startswith("[System]:")]
+    msg_parts = [p for p in parts if not p.startswith("[System]:") and p != assistant_hint]
+
+    # 从最新消息往前取，尽量多留近期上下文在 content
+    reserved_for_refs = 200  # references 引导语预留
+    system_len = sum(len(p) + 2 for p in system_parts)  # +2 是 \n\n
+    budget = max_len - system_len - len(assistant_hint) - 4 - reserved_for_refs
+
+    kept_msgs = []
+    kept_len = 0
+    for p in reversed(msg_parts):
+        if kept_len + len(p) + 4 > budget:
+            break
+        kept_msgs.insert(0, p)
+        kept_len += len(p) + 4
+
+    # 没有旧历史可分流（消息太少但单条超长，或 tools 本身撑爆）→ 退回硬压缩兜底
+    old_msgs = msg_parts[: len(msg_parts) - len(kept_msgs)]
+    if not old_msgs:
+        text = compress_content(parts, max_len)
+        return text, [], "chat"
+
+    # content = System段 + 保留的近期消息 + 末尾提示
+    content_parts = system_parts + kept_msgs + [assistant_hint]
+    # 若保留的近期消息为空（单条超长全进 references），补引导语让模型知道要处理引用内容
+    if not kept_msgs:
+        content_parts = system_parts + ["[User]: 请根据上方引用的内容回答。"] + [assistant_hint]
+    content = "\n\n".join(content_parts)
+    # 兜底：若仍超长（tools 极大），硬压缩
+    if len(content) > max_len:
+        content = compress_content(content_parts, max_len)
+
+    # references = 旧历史拼成一段
+    history_text = "\n\n".join(old_msgs)
+    references = [{
+        "type": "dom",
+        "title": "较早的对话历史",
+        "content": f"以下是较早的对话历史，供参考：\n\n{history_text}",
+        "metadata": {"path": "", "file_ids": []},
+    }]
+
+    return content, references, "chat"
 
 
 def compress_content(parts: list[str], max_len: int) -> str:

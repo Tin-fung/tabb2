@@ -184,7 +184,7 @@ async def _stream_claude_response(
     error_msg = ""
 
     try:
-        async for event in client.send_message(session_id, content, tabbit_model):
+        async for event in client.send_message(session_id, content, tabbit_model, references=references, task_name=task_name):
             et = event["event"]
             ed = event["data"]
 
@@ -258,8 +258,8 @@ async def claude_messages(request: Request):
     if claude_system_prompt:
         body["_injected_system_prompt"] = claude_system_prompt
 
-    # 构建发送内容
-    content = map_claude_to_content(body, trigger_signal)
+    # 构建发送内容（超长时自动分流：content+references 绕过 20421 网关限制）
+    content, references, task_name = map_claude_to_content(body, trigger_signal)
 
     # 创建聊天会话
     try:
@@ -302,7 +302,7 @@ async def claude_messages(request: Request):
     error_msg = ""
 
     try:
-        async for event in client.send_message(session_id, content, tabbit_model):
+        async for event in client.send_message(session_id, content, tabbit_model, references=references, task_name=task_name):
             if event["event"] == "message_chunk":
                 full_text += event["data"].get("content", "")
         if token_id and _tm:
