@@ -6,3 +6,5 @@ vps_probe.py
 # Python
 __pycache__/
 *.pyc
+.venv/
+.probe-venv/
