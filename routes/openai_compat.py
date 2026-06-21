@@ -12,6 +12,7 @@ from core.token_manager import TokenManager
 from core.log_store import LogStore, LogEntry
 from core.config import ConfigManager
 from core.model_registry import get_registry
+from core.claude_compat import MAX_CONTENT_LEN, compress_content
 
 logger = logging.getLogger("tabbit2openai")
 
@@ -66,7 +67,11 @@ class ChatCompletionRequest(BaseModel):
 def _build_content(messages: list[ChatMessage]) -> str:
     system_prompt = _cfg.get("proxy", "system_prompt") if _cfg else ""
     if len(messages) == 1 and not system_prompt:
-        return messages[0].text_content()
+        # 单条短消息快速路径，但仍要过截断闸（单条也可能超长，如贴大段代码）
+        text = messages[0].text_content()
+        if len(text) > MAX_CONTENT_LEN:
+            text = compress_content([text], MAX_CONTENT_LEN)
+        return text
     parts = []
     if system_prompt:
         parts.append(f"[System]: {system_prompt}")
@@ -75,7 +80,12 @@ def _build_content(messages: list[ChatMessage]) -> str:
             m.role, m.role.capitalize()
         )
         parts.append(f"[{label}]: {m.text_content()}")
-    return "\n\n".join(parts) + "\n\n[Assistant]:"
+    text = "\n\n".join(parts) + "\n\n[Assistant]:"
+    # 截断闸：与 Claude 端点共用同一套压缩逻辑，避免长对话裸奔触发上游 492。
+    # 2026-06 实测上游边界 ~20421 字符（见 claude_compat.MAX_CONTENT_LEN 注释）。
+    if len(text) > MAX_CONTENT_LEN:
+        text = compress_content(parts, MAX_CONTENT_LEN)
+    return text
 
 
 async def _get_client_and_token(

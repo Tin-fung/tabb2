@@ -21,6 +21,15 @@ logger = logging.getLogger("tabbit2openai")
 THINKING_START_TAG = "<thinking>"
 THINKING_END_TAG = "</thinking>"
 
+# 上游 content 字符上限（安全阈值）。
+# Tabbit 网关对 /api/v1/chat/completion 的 content 字段长度有统一限制，超长返回 492。
+# 2026-06 实测（scripts/probe_context_limit.py，4 个主力模型二分探测）：
+#   Claude-Opus-4.8 / GPT-5.5 / GLM-5.1 / Kimi-K2.6 边界全部 = 20421 字符
+#   → 证实这是网关统一闸门，非各模型自身限制（厂商上下文长度在此完全用不上）。
+# 设 18450 留 ~10% 余量吸收边界波动（实测 20421 vs 历史 20500，波动来自 uuid/时间戳等附加字段）。
+# Claude 端点 (map_claude_to_content) 和 OpenAI 端点 (_build_content) 共用此值。
+MAX_CONTENT_LEN = 18450
+
 # ── 触发信号 ──
 
 
@@ -269,17 +278,18 @@ def map_claude_to_content(
 
     # 5. 超长压缩：上游 /api/v1/chat/completion 对超长 content 返回 492
     # Claude Code 的 tools 定义 + 长历史可能达 15 万字符，需压缩到安全阈值内
-    # 实测阈值（二分+精细探测，真实提示词填充）:
-    #   20500 ✅ / 21000 ❌，设 18450 留 10% 余量
-    MAX_CONTENT_LEN = 18450
     if len(text) > MAX_CONTENT_LEN:
-        text = _compress_content(parts, MAX_CONTENT_LEN)
+        text = compress_content(parts, MAX_CONTENT_LEN)
 
     return text
 
 
-def _compress_content(parts: list[str], max_len: int) -> str:
-    """压缩超长 content，优先级：保留最新消息 + 工具名，截断旧历史和详细 schema"""
+def compress_content(parts: list[str], max_len: int) -> str:
+    """压缩超长 content，优先级：保留最新消息 + 工具名，截断旧历史和详细 schema
+
+    被 Claude 端点 (map_claude_to_content) 和 OpenAI 端点 (_build_content) 共用，
+    保证两个入口的截断行为一致，不会一个截一个裸奔。
+    """
     # 找到 tools 部分（通常在 [System] 开头含 <antml:tools>）
     tool_part = ""
     other_parts = []
