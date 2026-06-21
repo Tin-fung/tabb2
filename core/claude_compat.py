@@ -269,8 +269,9 @@ def map_claude_to_content(
 
     # 5. 超长压缩：上游 /api/v1/chat/completion 对超长 content 返回 492
     # Claude Code 的 tools 定义 + 长历史可能达 15 万字符，需压缩到安全阈值内
-    # 实测阈值: 10000 ✅成功，50000 492，设 10000 留足余量
-    MAX_CONTENT_LEN = 10000
+    # 实测阈值（二分+精细探测，真实提示词填充）:
+    #   20500 ✅ / 21000 ❌，设 18450 留 10% 余量
+    MAX_CONTENT_LEN = 18450
     if len(text) > MAX_CONTENT_LEN:
         text = _compress_content(parts, MAX_CONTENT_LEN)
 
