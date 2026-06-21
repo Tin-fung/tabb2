@@ -423,9 +423,18 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
                 cookies["next-auth.session-token"] = parts[1]
 
             # 3a. 模型清单接口
+            server_time_offset = 0.0
             try:
                 async with _httpx.AsyncClient(timeout=10, verify=False) as hc:
                     resp = await hc.get(f"{base_url}/api/v0/chat/models", headers=headers, cookies=cookies)
+                    # 从 Date 头同步服务器时间，供 3b 生成 uuid 用
+                    dh = resp.headers.get("date")
+                    if dh:
+                        try:
+                            from email.utils import parsedate_to_datetime as _pd
+                            server_time_offset = _pd(dh).timestamp() - time.time()
+                        except Exception:
+                            pass
                     if resp.status_code == 200:
                         data = resp.json()
                         count = sum(len(v) for v in (data.get("supported_models") or {}).values())
@@ -435,12 +444,26 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             except Exception as e:
                 check("上游连通(模型接口)", "fail", f"连接失败: {e}")
 
-            # 3b. 建会话测试
+            # 3a+1. 服务器时间同步状态（unique-uuid 时间戳位校验依赖）
+            if server_time_offset != 0.0:
+                abs_off = abs(server_time_offset)
+                if abs_off < 60:
+                    check("时间同步", "pass", f"vps 与上游时钟偏差 {server_time_offset:+.1f}s（±60s 内，安全）")
+                elif abs_off < 300:
+                    check("时间同步", "warn", f"vps 与上游时钟偏差 {server_time_offset:+.1f}s（偏大，建议同步系统时钟）")
+                else:
+                    check("时间同步", "fail", f"vps 与上游时钟偏差 {server_time_offset:+.1f}s（过大，时间戳位校验会翻车！请同步系统时钟：apt install ntp && systemctl start ntp）")
+            else:
+                check("时间同步", "warn", "未能从上游 Date 头同步时间（可能被 4xx 拒绝），无法判断时钟偏差")
+
+            # 3b. 建会话测试（用同步后的服务器时间生成 uuid）
             try:
                 async with _httpx.AsyncClient(timeout=15, verify=False, follow_redirects=True) as hc:
                     import urllib.parse as _up, json as _json
                     router_state = ["",{"children":["chat",{"children":[["id","new","d"],{"children":["__PAGE__",{},None,"refetch"]},None,None]},None,None]},None,None]
-                    h2 = {**headers, "rsc":"1", "next-router-state-tree": _up.quote(_json.dumps(router_state)),
+                    h2 = {**headers,
+                          "unique-uuid": _gen_unique_uuid(tabbit_cfg.get("default_browser", True), time.time() + server_time_offset),
+                          "rsc":"1", "next-router-state-tree": _up.quote(_json.dumps(router_state)),
                           "referer": f"{base_url}/chat/new"}
                     resp = await hc.get(f"{base_url}/chat/new", params={"_rsc":"auto"}, headers=h2, cookies=cookies)
                     import re as _re

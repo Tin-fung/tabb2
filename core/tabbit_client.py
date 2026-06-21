@@ -7,6 +7,7 @@ import base64
 import random
 import logging
 import urllib.parse
+from email.utils import parsedate_to_datetime
 from typing import AsyncGenerator
 
 import httpx
@@ -26,13 +27,16 @@ _UUID_HEX = "0123456789abcdef"
 _UUID_HEX_NO_MARKER = _UUID_HEX.replace(_UUID_DEFAULT_MARKER, "")
 
 
-def _gen_unique_uuid(is_default_browser: bool = True) -> str:
+def _gen_unique_uuid(is_default_browser: bool = True, ts: float | None = None) -> str:
     """生成 Tabbit 风格 unique-uuid，编码默认浏览器标记 + 时间戳。
 
     1:1 移植自 web 端 chunk eN(isDefault) 函数。
+    ts: 生成时间戳位用的秒级时间，默认本地 time.time()。
+        传入上游服务器时间可规避 vps 本地时钟漂移。
     """
+    now = ts if ts is not None else time.time()
     # 当前秒级时间戳 → 8 位 16 进制（取末 8 位，不足前补 0）
-    ts_hex = format(int(time.time()), "x").zfill(len(_UUID_TS_POSITIONS))[-len(_UUID_TS_POSITIONS):]
+    ts_hex = format(int(now), "x").zfill(len(_UUID_TS_POSITIONS))[-len(_UUID_TS_POSITIONS):]
     ts_map = {pos: ts_hex[i] for i, pos in enumerate(_UUID_TS_POSITIONS)}
     chars = []
     for i in range(32):
@@ -82,6 +86,11 @@ class TabbitClient:
         # 默认浏览器标记：编进 unique-uuid 第 5 位，后端据此发 Pro 会员权益
         # 移植自 web 端 eN(isDefault) 算法。设 True 即让后端按默认浏览器用户对待。
         self.default_browser = default_browser
+        # 服务器时间偏移（秒）：server_time = local_time + _server_time_offset
+        # 从上游响应 Date 头惰性同步，规避 vps 本地时钟漂移导致时间戳位校验失败。
+        # 初始 0（未同步），首次请求后校正。
+        self._server_time_offset: float = 0.0
+        self._server_time_synced: bool = False
 
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=15, read=120, write=15, pool=15),
@@ -98,6 +107,29 @@ class TabbitClient:
         except Exception:
             return str(uuid.uuid4())
 
+    def _sync_server_time(self, resp: httpx.Response) -> None:
+        """从上游响应 Date 头同步服务器时间偏移。
+
+        上游 unique-uuid 时间戳位用服务器时钟校验，vps 本地时钟漂移会翻车。
+        从 Date 头取权威时间，算出 offset，后续生成 uuid 时用 local+offset 校正。
+        响应网络往返有延迟，但时间戳位精度是秒，±几秒在容忍窗内。
+        """
+        date_header = resp.headers.get("date")
+        if not date_header:
+            return
+        try:
+            server_dt = parsedate_to_datetime(date_header)
+            server_ts = server_dt.timestamp()
+            # 用收到响应的本地时间近似请求时刻（往返延迟对称的话误差小）
+            self._server_time_offset = server_ts - time.time()
+            self._server_time_synced = True
+        except Exception:
+            pass
+
+    def _server_ts(self) -> float:
+        """返回校正后的服务器时间戳。未同步时退回本地时间。"""
+        return time.time() + self._server_time_offset
+
     def _get_headers(self, referer_path: str = "/newtab") -> dict:
         # x-req-ctx 是版本校验关键头（base64("版本(sparkle_version)")），缺则 493
         x_req_ctx = base64.b64encode(
@@ -105,7 +137,8 @@ class TabbitClient:
         ).decode()
         # unique-uuid 编码"是否默认浏览器"状态 + 时间戳，后端据此发 Pro 会员权益。
         # 算法移植自 web 端 eN()：第 5 位 "1"=默认浏览器，8 个固定位填当前时间戳。
-        unique_uuid = _gen_unique_uuid(self.default_browser)
+        # 时间戳用上游服务器时间（从 Date 头同步），规避 vps 时钟漂移。
+        unique_uuid = _gen_unique_uuid(self.default_browser, self._server_ts())
         return {
             "User-Agent": f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
             "sec-ch-ua": '"Chromium";v="148", "Tabbit";v="148", "Not/A)Brand";v="99"',
@@ -170,6 +203,7 @@ class TabbitClient:
             headers=headers,
             cookies=self._get_cookies(),
         )
+        self._sync_server_time(resp)
         text = resp.text
         match = re.search(
             r"/(?:chat|session)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
@@ -223,6 +257,8 @@ class TabbitClient:
             headers=headers,
             cookies=self._get_cookies(),
         ) as resp:
+            # 流式响应头在进入上下文时就可读，同步服务器时间（供下次请求用）
+            self._sync_server_time(resp)
             if resp.status_code != 200:
                 body = await resp.aread()
                 raise Exception(
