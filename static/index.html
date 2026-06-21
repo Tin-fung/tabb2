@@ -148,6 +148,7 @@ const navItems = [
   { id: 'tokens', label: 'Tokens', icon: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/>' },
   { id: 'settings', label: 'Settings', icon: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>' },
   { id: 'logs', label: 'Logs', icon: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01"/>' },
+  { id: 'diagnose', label: '诊断', icon: '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z"/>' },
 ];
 
 function layout() {
@@ -205,6 +206,7 @@ async function loadPage() {
       case 'tokens': await renderTokens(el); break;
       case 'settings': await renderSettings(el); break;
       case 'logs': await renderLogs(el); break;
+      case 'diagnose': await renderDiagnose(el); break;
     }
   } catch (e) {
     el.innerHTML = `<div class="text-red-400">加载失败: ${e.message}</div>`;
@@ -717,6 +719,142 @@ function toggleAutoRefresh(on) {
     autoRefreshTimer = setInterval(() => {
       if (currentPage === 'logs') renderLogs(document.getElementById('pageContent'));
     }, 5000);
+  }
+}
+
+// ── 诊断 ──
+
+async function renderDiagnose(el) {
+  el.innerHTML = `
+    <div class="flex items-center justify-between mb-6">
+      <h2 class="text-2xl font-semibold">诊断</h2>
+      <button onclick="runDiagnose()" id="diagRunBtn" class="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 transition-colors">运行深度诊断</button>
+    </div>
+    <div id="diagHealth" class="mb-6"></div>
+    <div id="diagModels" class="mb-6"></div>
+    <div id="diagResult"></div>`;
+  await loadDiagHealth();
+  await loadDiagModels();
+}
+
+// 健康概览（轻量 /health，自动加载）
+async function loadDiagHealth() {
+  const el = document.getElementById('diagHealth');
+  el.innerHTML = '<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-zinc-400">加载健康状态...</p></div>';
+  try {
+    // /health 挂在主 app 上，无 /api/admin 前缀，直接 fetch
+    const res = await fetch('/health');
+    const h = await res.json();
+    const statusColor = h.status === 'ok' ? 'text-emerald-400' : 'text-red-400';
+    document.getElementById('diagHealth').innerHTML = `
+      <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
+        <div class="flex items-center gap-2 mb-3">
+          <span class="text-sm text-zinc-400">服务健康</span>
+          <span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${statusColor} bg-zinc-800">${h.status}</span>
+        </div>
+        <div class="grid grid-cols-2 gap-4 text-sm">
+          <div><span class="text-zinc-500">Token 数:</span> <span class="text-zinc-200">${h.tokens}</span></div>
+          <div><span class="text-zinc-500">模型注册表:</span> <span class="${h.model_registry_ready ? 'text-emerald-400' : 'text-amber-400'}">${h.model_registry_ready ? '就绪' : '未就绪'}</span></div>
+        </div>
+      </div>`;
+  } catch (e) {
+    document.getElementById('diagHealth').innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">健康检查失败: ${esc(e.message)}</p></div>`;
+  }
+}
+
+// 模型清单（动态 + 刷新）
+async function loadDiagModels() {
+  const el = document.getElementById('diagModels');
+  el.innerHTML = '<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-zinc-400">加载模型清单...</p></div>';
+  try {
+    const m = await api('/models');
+    const models = m.models || [];
+    document.getElementById('diagModels').innerHTML = `
+      <div class="rounded-xl border border-zinc-800 bg-zinc-900">
+        <div class="px-5 py-4 border-b border-zinc-800 flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <h3 class="text-sm font-medium">模型清单</h3>
+            <span class="text-xs text-zinc-500">动态拉取 · ${m.ready ? '已缓存' : '兜底静态表'}</span>
+          </div>
+          <button onclick="refreshModels()" class="rounded-lg border border-zinc-700 px-3 py-1 text-xs hover:bg-zinc-800 transition-colors">刷新</button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead><tr class="text-zinc-400 text-left border-b border-zinc-800">
+              <th class="px-5 py-3 font-medium">模型 ID</th>
+              <th class="px-5 py-3 font-medium">显示名</th>
+              <th class="px-5 py-3 font-medium">图片</th>
+              <th class="px-5 py-3 font-medium">工具</th>
+            </tr></thead>
+            <tbody>
+              ${models.map(m => `<tr class="border-b border-zinc-800/50 hover:bg-zinc-800/30">
+                <td class="px-5 py-3 font-mono text-xs text-zinc-200">${esc(m.id)}</td>
+                <td class="px-5 py-3 text-zinc-400">${esc(m.tabbit_display_name || m.id)}</td>
+                <td class="px-5 py-3">${m.supports_images ? '<span class="text-emerald-400">✓</span>' : '<span class="text-zinc-600">—</span>'}</td>
+                <td class="px-5 py-3">${m.supports_tools ? '<span class="text-emerald-400">✓</span>' : '<span class="text-zinc-600">—</span>'}</td>
+              </tr>`).join('') || '<tr><td colspan="4" class="px-5 py-8 text-center text-zinc-500">暂无模型</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+  } catch (e) {
+    document.getElementById('diagModels').innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">加载失败: ${esc(e.message)}</p></div>`;
+  }
+}
+
+async function refreshModels() {
+  try {
+    const r = await api('/models/refresh', { method: 'POST' });
+    await loadDiagModels();
+    alert(r.ok ? `刷新成功，共 ${r.count} 个模型` : '刷新失败');
+  } catch (e) { alert('刷新失败: ' + e.message); }
+}
+
+// 深度诊断
+async function runDiagnose() {
+  const btn = document.getElementById('diagRunBtn');
+  const el = document.getElementById('diagResult');
+  btn.disabled = true; btn.textContent = '诊断中...';
+  el.innerHTML = '<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-zinc-400">正在运行深度诊断（会实测上游连接）...</p></div>';
+  try {
+    const r = await api('/diagnose');
+    const s = r.summary;
+    const overallColor = { pass: 'text-emerald-400', warn: 'text-amber-400', fail: 'text-red-400' }[s.overall] || 'text-zinc-400';
+    const checkRow = (c) => {
+      const color = { pass: 'text-emerald-400', warn: 'text-amber-400', fail: 'text-red-400' }[c.status] || 'text-zinc-400';
+      const icon = { pass: '✓', warn: '!', fail: '✗' }[c.status] || '?';
+      return `<tr class="border-b border-zinc-800/50">
+        <td class="px-5 py-3"><span class="${color} mr-2">${icon}</span><span class="text-zinc-200">${esc(c.name)}</span></td>
+        <td class="px-5 py-3"><span class="${color} text-xs">${c.status}</span></td>
+        <td class="px-5 py-3 text-zinc-500 text-xs font-mono break-all">${esc(c.detail || '')}</td>
+      </tr>`;
+    };
+    el.innerHTML = `
+      <div class="rounded-xl border border-zinc-800 bg-zinc-900">
+        <div class="px-5 py-4 border-b border-zinc-800 flex items-center justify-between">
+          <h3 class="text-sm font-medium">深度诊断结果</h3>
+          <div class="flex items-center gap-3 text-xs">
+            <span class="${overallColor} font-medium">总体: ${s.overall}</span>
+            <span class="text-emerald-400">通过 ${s.pass}</span>
+            <span class="text-amber-400">警告 ${s.warn}</span>
+            <span class="text-red-400">失败 ${s.fail}</span>
+          </div>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead><tr class="text-zinc-400 text-left border-b border-zinc-800">
+              <th class="px-5 py-3 font-medium">检查项</th>
+              <th class="px-5 py-3 font-medium">状态</th>
+              <th class="px-5 py-3 font-medium">详情</th>
+            </tr></thead>
+            <tbody>${(r.checks || []).map(checkRow).join('')}</tbody>
+          </table>
+        </div>
+      </div>`;
+  } catch (e) {
+    el.innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">诊断失败: ${esc(e.message)}</p></div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = '运行深度诊断';
   }
 }
 
