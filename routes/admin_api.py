@@ -38,6 +38,7 @@ class SettingsUpdateRequest(BaseModel):
     port: Optional[int] = None
     base_url: Optional[str] = None
     client_id: Optional[str] = None
+    browser_version: Optional[str] = None
     api_key: Optional[str] = None
     max_entries: Optional[int] = None
     claude_default_model: Optional[str] = None
@@ -165,6 +166,7 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             target["value"],
             _cfg.get("tabbit", "base_url"),
             _cfg.get("tabbit", "client_id"),
+            _cfg.get("tabbit", "browser_version"),
         )
         try:
             session_id = await client.create_chat_session()
@@ -265,6 +267,8 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             _cfg.set_val("tabbit", "base_url", req.base_url)
         if req.client_id is not None:
             _cfg.set_val("tabbit", "client_id", req.client_id)
+        if req.browser_version is not None:
+            _cfg.set_val("tabbit", "browser_version", req.browser_version)
         if req.api_key is not None:
             _cfg.set_val("proxy", "api_key", req.api_key)
         if req.claude_default_model is not None:

@@ -84,6 +84,7 @@ async def _get_client_and_token(
             token,
             _cfg.get("tabbit", "base_url"),
             _cfg.get("tabbit", "client_id"),
+            _cfg.get("tabbit", "browser_version"),
         )
     return _fallback_clients[token], "bearer", ""
 

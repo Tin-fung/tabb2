@@ -536,6 +536,10 @@ async function renderSettings(el) {
             <label class="block text-sm text-zinc-400 mb-1.5">Client ID</label>
             <input id="sClientId" type="text" value="${esc(s.tabbit.client_id)}" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100">
           </div>
+          <div>
+            <label class="block text-sm text-zinc-400 mb-1.5">浏览器版本号（绕过版本校验）</label>
+            <input id="sBrowserVersion" type="text" value="${esc(s.tabbit.browser_version || '1.1')}" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100" placeholder="例如 1.1">
+          </div>
         </div>
       </div>
       <!-- Proxy -->
@@ -617,6 +621,7 @@ async function saveSettings() {
         port: parseInt(document.getElementById('sPort').value),
         base_url: document.getElementById('sBaseUrl').value,
         client_id: document.getElementById('sClientId').value,
+        browser_version: document.getElementById('sBrowserVersion').value,
         api_key: document.getElementById('sApiKey').value,
         claude_default_model: document.getElementById('sClaudeModel').value,
         openai_system_prompt: document.getElementById('sOpenaiPrompt').value,

@@ -27,7 +27,7 @@ MODEL_MAP = {
 
 
 class TabbitClient:
-    def __init__(self, token_str: str, base_url: str | None = None, client_id: str | None = None):
+    def __init__(self, token_str: str, base_url: str | None = None, client_id: str | None = None, browser_version: str | None = None):
         parts = token_str.split("|")
         self.jwt_token = parts[0]
         self.next_auth = parts[1] if len(parts) > 1 else None
@@ -35,6 +35,8 @@ class TabbitClient:
         self.user_id = self._extract_user_id(self.jwt_token)
         self.base_url = base_url or "https://web.tabbitbrowser.com"
         self.client_id = client_id or "e7fa44387b1238ef1f6f"
+        # 浏览器主版本号，用于绕过上游版本校验（code 493）
+        self.browser_version = browser_version or "1.1"
 
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=15, read=120, write=15, pool=15),
@@ -52,9 +54,10 @@ class TabbitClient:
             return str(uuid.uuid4())
 
     def _get_headers(self, referer_path: str = "/newtab") -> dict:
+        v = self.browser_version
         return {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36",
-            "sec-ch-ua": '"Not:A-Brand";v="99", "Tabbit";v="145", "Chromium";v="145"',
+            "User-Agent": f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{v}.0.0.0 Safari/537.36",
+            "sec-ch-ua": f'"Not:A-Brand";v="99", "Tabbit";v="{v}", "Chromium";v="{v}"',
             "sec-ch-ua-platform": '"Windows"',
             "x-chrome-id-consistency-request": (
                 f"version=1,client_id={self.client_id},"
@@ -159,6 +162,14 @@ class TabbitClient:
                 elif line.startswith("data:") and current_event:
                     data_str = line[len("data:") :].strip()
                     try:
-                        yield {"event": current_event, "data": json.loads(data_str)}
+                        data = json.loads(data_str)
                     except Exception:
-                        pass
+                        continue
+                    # 上游 error 事件必须抛出，否则调用方会拿到空内容
+                    if current_event == "error":
+                        msg = data.get("message", "unknown upstream error")
+                        code = data.get("code", "")
+                        raise Exception(
+                            f"Tabbit upstream error {code}: {msg}"
+                        )
+                    yield {"event": current_event, "data": data}
