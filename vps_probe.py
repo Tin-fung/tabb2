@@ -252,13 +252,66 @@ async def test_send_variants(client):
     await try_send("加origin+x-requested-with", h6, cookies())
 
 
+async def test_model_names(client):
+    """关键验证：用上游真实 name 作为 selected_model，看 493 是否消失"""
+    print("\n" + "="*60)
+    print("[6] 关键验证：selected_model 用上游真实 name")
+    print("="*60)
+
+    async def make_session():
+        router_state = ["", {"children": ["chat", {"children": [["id","new","d"], {"children": ["__PAGE__",{},None,"refetch"]}, None, None]}, None, None]}, None, None]
+        h = {**base_headers("/chat/new"), "rsc": "1", "next-router-state-tree": urllib.parse.quote(json.dumps(router_state))}
+        r = await client.get(f"{BASE_URL}/chat/new", params={"_rsc":"auto"}, headers=h, cookies=cookies())
+        m = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", r.text)
+        return m.group(1) if m else None
+
+    async def try_model(label, model_val):
+        sid = await make_session()
+        if not sid:
+            print(f"  {label:35} -> NO_SESSION")
+            return
+        content = "hi"
+        payload = {"chat_session_id": sid, "content": content, "selected_model": model_val,
+                   "agent_mode": False, "metadatas": {"html_content": f"<p>{content}</p>"},
+                   "entity": {"key": hashlib.md5(b"").hexdigest(), "extras": {"type":"tab","url":""}}}
+        sh = {**base_headers(f"/chat/{sid}"), "Accept":"text/event-stream", "Content-Type":"application/json"}
+        try:
+            async with client.stream("POST", f"{BASE_URL}/chat/send", json=payload, headers=sh, cookies=cookies()) as resp:
+                got = False; err = ""; chunk_text = ""
+                async for line in resp.aiter_lines():
+                    if line.startswith("data:"):
+                        try:
+                            d = json.loads(line[5:].strip())
+                            if d.get("code") == 493: err = "493版本校验失败"
+                            elif d.get("code"): err = f"code={d.get('code')}:{d.get('message','')[:40]}"
+                            if d.get("content"): chunk_text += d["content"]
+                        except: pass
+                    if "message_chunk" in line: got = True
+                if got:
+                    print(f"  🎉 {label:35} -> ✅成功！返回: {chunk_text[:60]!r}")
+                else:
+                    print(f"     {label:35} -> {err or '空响应'}")
+        except Exception as e:
+            print(f"     {label:35} -> EXC {str(e)[:50]}")
+
+    # adapter 当前传的（预期全 493）
+    await try_model("adapter旧值: 最佳", "最佳")
+    await try_model("adapter旧值: GPT-5.2-Chat", "GPT-5.2-Chat")
+    # 上游真实 name（预期成功）
+    await try_model("真实name: best-model", "best-model")
+    await try_model("真实name: gpt-5.2-chat", "gpt-5.2-chat")
+    await try_model("真实name: glm-5", "glm-5")
+    await try_model("真实name: claude-sonnet-4-5@20250929", "claude-sonnet-4-5@20250929")
+    await try_model("真实name: gemini-3-pro-preview", "gemini-3-pro-preview")
+    await try_model("真实name: byteplus/deepseek-v3-2", "byteplus/deepseek-v3-2")
+
+
 async def main():
     token_str = load_token()
     parse_token(token_str)
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(connect=15, read=60, write=15, pool=15), follow_redirects=False, verify=False) as client:
-        await get_models_full(client)
-        await test_send_variants(client)
+        await test_model_names(client)
 
         print("\n" + "="*60)
         print("诊断完成。把以上完整输出贴给本仙女。")
