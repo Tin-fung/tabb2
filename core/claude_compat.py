@@ -22,10 +22,14 @@ THINKING_START_TAG = "<thinking>"
 THINKING_END_TAG = "</thinking>"
 
 # 上游 content 字符上限（安全阈值）。
-# Tabbit 网关对 /api/v1/chat/completion 的 content 字段长度有统一限制，超长返回 492。
+# Tabbit 网关对 content 字段长度有统一限制，超长返回 492。
 # 2026-06 实测（scripts/probe_context_limit.py，4 个主力模型二分探测）：
 #   Claude-Opus-4.8 / GPT-5.5 / GLM-5.1 / Kimi-K2.6 边界全部 = 20421 字符
 #   → 证实这是网关统一闸门，非各模型自身限制（厂商上下文长度在此完全用不上）。
+# 路径穷尽验证（scripts/probe_chat_send.py）：换 /chat/send (agent模式) 接口
+#   同样 492 拦死，边界一致 → 492 是网关全局限制，换接口绕不过去。
+# 真机还有输入框前端限制 20000 字符（20000/20000 UI 显示），proxy 绕过输入框
+#   直打接口，故必须在此截断补上真机本有的限制。
 # 设 18450 留 ~10% 余量吸收边界波动（实测 20421 vs 历史 20500，波动来自 uuid/时间戳等附加字段）。
 # Claude 端点 (map_claude_to_content) 和 OpenAI 端点 (_build_content) 共用此值。
 MAX_CONTENT_LEN = 18450

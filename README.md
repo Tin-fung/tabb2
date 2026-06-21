@@ -140,6 +140,18 @@ curl http://localhost:8800/v1/messages \
 | `GET` | `/admin` | 访问 Web 管理面板 |
 | `POST`| `/api/admin/login` | 管理员登录接口 |
 
+## ⚠️ 已知限制：上下文长度
+
+Tabbit 对单次请求的 content 字段有 **~20421 字符** 的网关硬限制，超长返回 `492`。这是经过多路径实测验证的结论：
+
+- **4 个主力模型边界一致**（Claude-Opus-4.8 / GPT-5.5 / GLM-5.1 / Kimi-K2.6 均为 20421）→ 网关统一闸门，与模型自身上下文窗口无关
+- **换接口绕不过**：`/api/v1/chat/completion` 与 `/chat/send`（agent 模式）边界完全一致
+- **真机还有输入框前端限制**：Tabbit 客户端输入框硬卡 20000 字符（UI 显示 `20000/20000`），proxy 绕过输入框直打接口，故由 `MAX_CONTENT_LEN=18450`（留 10% 余量）补上截断
+
+**实际影响**：GLM-5.1（20万 token）、GPT-5.5（1M token）等长上下文模型的优势，在 Tabbit 网关层被统一截断，**无法利用**。本项目通过 `compress_content` 智能压缩（保留最新消息 + 工具名，截断旧历史与详细 schema）在限制内最大化有效上下文。
+
+探测脚本见 `scripts/probe_context_limit.py`，Tabbit 调整限制后可重跑刷新结论。
+
 ## 📄 许可证
 
 本项目基于 [MIT License](LICENSE) 开源。
