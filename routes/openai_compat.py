@@ -85,6 +85,7 @@ async def _get_client_and_token(
             _cfg.get("tabbit", "base_url"),
             _cfg.get("tabbit", "client_id"),
             _cfg.get("tabbit", "browser_version"),
+            _cfg.get("tabbit", "sparkle_version"),
         )
     return _fallback_clients[token], "bearer", ""
 
@@ -144,7 +145,7 @@ async def chat_completions(
     req: ChatCompletionRequest, authorization: str = Header(None)
 ):
     client, token_name, token_id = await _get_client_and_token(authorization)
-    tabbit_model = MODEL_MAP.get(req.model.lower(), "最佳")
+    tabbit_model = MODEL_MAP.get(req.model.lower(), "Default")
     content = _build_content(req.messages)
 
     try:

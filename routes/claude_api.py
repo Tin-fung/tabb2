@@ -60,7 +60,7 @@ def _resolve_tabbit_model(model: str) -> str:
     # Claude 模型名映射
     for prefix, target in CLAUDE_MODEL_MAP.items():
         if model.startswith(prefix):
-            return MODEL_MAP.get(target, "最佳")
+            return MODEL_MAP.get(target, "Default")
     # 从 config 中读取默认模型
     default = _cfg.get("claude", "default_model") if _cfg else None
     if default and default in MODEL_MAP:
@@ -99,6 +99,7 @@ async def _get_client_and_token(
             _cfg.get("tabbit", "base_url") if _cfg else None,
             _cfg.get("tabbit", "client_id") if _cfg else None,
             _cfg.get("tabbit", "browser_version") if _cfg else None,
+            _cfg.get("tabbit", "sparkle_version") if _cfg else None,
         )
     return _fallback_clients[token], "bearer", ""
 

@@ -370,7 +370,7 @@ function closeModal() {
 // ── Google 登录获取 Token ──
 
 const GOOGLE_CLIENT_ID = '448526856882-gks4gsvgspqkcdt8jsql5b5en0mk3v15.apps.googleusercontent.com';
-const TABBIT_ORIGIN = 'https://web.tabbitbrowser.com';
+const TABBIT_ORIGIN = 'https://web.tabbit.ai';
 
 function showGoogleLogin() {
   document.getElementById('tokenModal').innerHTML = `
@@ -538,7 +538,7 @@ async function renderSettings(el) {
           </div>
           <div>
             <label class="block text-sm text-zinc-400 mb-1.5">浏览器版本号（绕过版本校验）</label>
-            <input id="sBrowserVersion" type="text" value="${esc(s.tabbit.browser_version || '1.1')}" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100" placeholder="例如 1.1">
+            <input id="sBrowserVersion" type="text" value="${esc(s.tabbit.browser_version || '1.1.39')}" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100" placeholder="例如 1.1.39">
           </div>
         </div>
       </div>

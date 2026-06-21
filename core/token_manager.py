@@ -46,6 +46,7 @@ class TokenManager:
                 self.config.get("tabbit", "base_url"),
                 self.config.get("tabbit", "client_id"),
                 self.config.get("tabbit", "browser_version"),
+                self.config.get("tabbit", "sparkle_version"),
             )
         return self._clients[tid]
 

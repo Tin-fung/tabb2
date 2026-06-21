@@ -11,9 +11,10 @@ DEFAULT_CONFIG = {
     "server": {"host": "0.0.0.0", "port": 8800},
     "admin": {"password_hash": "", "salt": "", "jwt_secret": ""},
     "tabbit": {
-        "base_url": "https://web.tabbitbrowser.com",
+        "base_url": "https://web.tabbit.ai",
         "client_id": "e7fa44387b1238ef1f6f",
-        "browser_version": "1.1",
+        "browser_version": "1.1.39",
+        "sparkle_version": 10101039,
     },
     "tokens": [],
     "proxy": {"api_key": "", "system_prompt": ""},

@@ -167,6 +167,7 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             _cfg.get("tabbit", "base_url"),
             _cfg.get("tabbit", "client_id"),
             _cfg.get("tabbit", "browser_version"),
+            _cfg.get("tabbit", "sparkle_version"),
         )
         try:
             session_id = await client.create_chat_session()
@@ -187,7 +188,7 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
         import httpx as _httpx
 
         tabbit_url = (
-            (_cfg.get("tabbit", "base_url") or "https://web.tabbitbrowser.com")
+            (_cfg.get("tabbit", "base_url") or "https://web.tabbit.ai")
             + "/proxy/v0/oauth/third-party-login"
         )
         async with _httpx.AsyncClient(verify=False, timeout=15) as hc:
@@ -196,9 +197,9 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
                 json={"id_token": req.id_token, "select_by": "btn", "type": 1},
                 headers={
                     "Content-Type": "application/json",
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                    "Origin": _cfg.get("tabbit", "base_url") or "https://web.tabbitbrowser.com",
-                    "Referer": (_cfg.get("tabbit", "base_url") or "https://web.tabbitbrowser.com") + "/login",
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+                    "Origin": _cfg.get("tabbit", "base_url") or "https://web.tabbit.ai",
+                    "Referer": (_cfg.get("tabbit", "base_url") or "https://web.tabbit.ai") + "/login",
                 },
             )
 
