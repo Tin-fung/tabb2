@@ -44,7 +44,7 @@ class TabbitClient:
 
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=15, read=120, write=15, pool=15),
-            follow_redirects=False,
+            follow_redirects=True,
             verify=False,
         )
 
@@ -58,11 +58,13 @@ class TabbitClient:
             return str(uuid.uuid4())
 
     def _get_headers(self, referer_path: str = "/newtab") -> dict:
-        # x-req-ctx 是上游版本校验的关键头（base64 编码的 "版本(sparkle_version)"）
-        # 解码即 "1.1.39(10101039)"，缺这个头会触发 493 "浏览器版本过低"
+        # x-req-ctx 是版本校验关键头（base64("版本(sparkle_version)")），缺则 493
         x_req_ctx = base64.b64encode(
             f"{self.browser_version}({self.sparkle_version})".encode()
         ).decode()
+        # unique-uuid 是客户端身份校验关键头，缺则 492 "欢迎使用 Tabbit 浏览器"
+        # 消融实验证明: 只要带任意 UUID 即可，其他签名头(x-nonce/x-signature 等)不校验
+        unique_uuid = str(uuid.uuid4())
         return {
             "User-Agent": f"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
             "sec-ch-ua": '"Chromium";v="148", "Tabbit";v="148", "Not/A)Brand";v="99"',
@@ -74,6 +76,7 @@ class TabbitClient:
                 "signin_mode=all_accounts,signout_mode=show_confirmation"
             ),
             "x-req-ctx": x_req_ctx,
+            "unique-uuid": unique_uuid,
             "origin": self.base_url,
             "referer": f"{self.base_url}{referer_path}",
         }
@@ -92,36 +95,9 @@ class TabbitClient:
     async def create_chat_session(self) -> str:
         """创建聊天会话，返回 session_id
 
-        新版上游用 /api/v1/session 创建会话（POST），返回 JSON 含 id。
-        兼容旧 RSC 方式作为 fallback。
+        用 RSC 方式 GET /chat/new，从响应里提取 session_id。
+        v10 验证: 此方式在 web.tabbit.ai 上可成功建会话。
         """
-        headers = {
-            **self._get_headers("/session/new"),
-            "Content-Type": "application/json",
-        }
-        # 新接口：POST /api/v1/session
-        try:
-            resp = await self.client.post(
-                f"{self.base_url}/api/v1/session",
-                json={"title": "New Chat"},
-                headers=headers,
-                cookies=self._get_cookies(),
-            )
-            if resp.status_code == 200:
-                data = resp.json()
-                # 尝试常见字段
-                sid = (
-                    data.get("id")
-                    or data.get("session_id")
-                    or (data.get("data") or {}).get("id")
-                    or (data.get("data") or {}).get("session_id")
-                )
-                if sid:
-                    return sid
-        except Exception:
-            pass
-
-        # fallback: 旧 RSC 方式（web.tabbitbrowser.com）
         router_state = [
             "",
             {
@@ -142,7 +118,7 @@ class TabbitClient:
             None,
             None,
         ]
-        old_headers = {
+        headers = {
             **self._get_headers("/chat/new"),
             "rsc": "1",
             "next-router-state-tree": urllib.parse.quote(json.dumps(router_state)),
@@ -150,7 +126,7 @@ class TabbitClient:
         resp = await self.client.get(
             f"{self.base_url}/chat/new",
             params={"_rsc": "auto"},
-            headers=old_headers,
+            headers=headers,
             cookies=self._get_cookies(),
         )
         text = resp.text
@@ -160,6 +136,13 @@ class TabbitClient:
         )
         if match:
             return match.group(1)
+        # 兜底：响应里直接找任意 UUID（v10 验证响应含裸 UUID）
+        uuids = re.findall(
+            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+            text,
+        )
+        if uuids:
+            return uuids[0]
         raise Exception("Failed to extract chat session_id from response")
 
     async def send_message(
