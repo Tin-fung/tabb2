@@ -47,12 +47,27 @@ async def try_chat_send(client: TabbitClient, session_id: str, content: str) -> 
             f"{client.base_url}/chat/send",
             json=payload, headers=headers, cookies=client._get_cookies(),
         )
-        # /chat/send 可能非流式，直接看状态码和 body
-        body = resp.text[:500]
+        body = resp.text
+        # 把完整响应存文件供分析（每次覆盖，文件名带长度）
+        with open(f"/tmp/chatsend_{len(content)}.txt", "w") as f:
+            f.write(body)
         if resp.status_code == 200:
-            # 看有没有 error 事件
-            if '"code":492' in body or "492" in body[:100]:
+            # 判断：ready=正常开始, error=有问题但 HTTP 放行
+            has_ready = "event: ready" in body or "event: message_start" in body
+            has_error = "event: error" in body
+            has_492 = '"code":492' in body or "492" in body[:200]
+            if has_492:
                 return False, f"492 in body"
+            if has_ready and not has_error:
+                return True, f"✓正常生成 (ready)"
+            if has_ready and has_error:
+                return True, f"⚠ready+error并存"
+            if has_error:
+                # 提取 error message
+                import re
+                m = re.search(r'"message"\s*:\s*"([^"]{0,60})', body)
+                msg = m.group(1) if m else "?"
+                return True, f"⚠HTTP放行但event:error | msg={msg}"
             return True, f"200 ok, body_head={body[:80]!r}"
         else:
             return False, f"http {resp.status_code}, body={body[:120]!r}"
