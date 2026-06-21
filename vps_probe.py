@@ -95,14 +95,15 @@ async def main():
             cookies_full["next-auth.session-token"] = NEXT_AUTH
         res = await try_send(client, "完整头", f"{base}/api/v1/chat/completion", headers_full, body_full, cookies_full)
 
-        if "493" in str(res):
+        # 不管 493 还是 492，都跑删头定位 + 加签名头
+        if "493" in str(res) or "492" in str(res):
             # [3] 逐个删头定位
-            print(f"\n=== [3] 逐个删头定位 493 触发头 ===")
+            print(f"\n=== [3] 逐个删头定位 ===")
             for h in ["x-req-ctx", "x-chrome-id-consistency-request", "origin", "referer", "sec-ch-ua", "sec-ch-ua-platform", "user-agent"]:
                 h2 = {k:v for k,v in headers_full.items() if k != h}
                 await try_send(client, f"删{h}", f"{base}/api/v1/chat/completion", h2, body_full, cookies_full)
 
-            # [4] 试加抓包里那些签名头（虽然本仙女不知道怎么算，但先试固定值看会不会变）
+            # [4] 试加抓包里的签名头
             print(f"\n=== [4] 试加抓包里的签名头（固定值）===")
             h3 = {**headers_full,
                   "x-nonce": "8bea33fe7363a0d0b47f5927beb4e1c3b9260ab8ef20de51cf4b151fa41dc0eb",
@@ -112,26 +113,36 @@ async def main():
                   "unique-uuid": "6262f08a-8133-9576-4c8e-d0c1e09799e0"}
             await try_send(client, "加签名头(固定值)", f"{base}/api/v1/chat/completion", h3, body_full, cookies_full)
 
+            # [5] 关键：换用抓包里的真实 device_id（不是 token 里的）
+            print(f"\n=== [5] 用抓包里的真实 device_id（6231c2b4...）===")
+            h4 = {**headers_full,
+                  "x-chrome-id-consistency-request": "version=1,client_id=e7fa44387b1238ef1f6f,device_id=6231c2b4-4a85-4151-8902-a052f345ef02,sync_account_id=6c00f622-a88a-4d2f-81d2-a4fd6e890d62,signin_mode=all_accounts,signout_mode=show_confirmation"}
+            await try_send(client, "真实device_id", f"{base}/api/v1/chat/completion", h4, body_full, cookies_full)
+
 
 async def try_send(client, label, url, headers, body, cookies):
     try:
         async with client.stream("POST", url, json=body, headers=headers, cookies=cookies, timeout=30) as resp:
-            got = False; err = ""; txt = ""
+            got = False; err = ""; txt = ""; full_data = ""
             async for line in resp.aiter_lines():
                 if line.startswith("data:"):
                     try:
                         d = json.loads(line[5:].strip())
+                        full_data = json.dumps(d, ensure_ascii=False)
                         if d.get("code") == 493: err = "493"
-                        elif d.get("code"): err = f"code={d.get('code')}:{d.get('message','')[:50]}"
+                        elif d.get("code") == 492: err = f"492"
+                        elif d.get("code"): err = f"code={d.get('code')}"
                         if d.get("content"): txt += d["content"]
                     except: pass
                 if "message_chunk" in line or '"content"' in line: got = True
             result = f"✅成功:{txt[:40]!r}" if got else (err or f"status={resp.status_code}空")
             mark = "🎉" if got else "  "
-            print(f"  {mark} {label:25} -> {result}")
+            print(f"  {mark} {label:30} -> {result}")
+            if not got and full_data:
+                print(f"       完整data: {full_data[:300]}")
             return result
     except Exception as e:
-        print(f"     {label:25} -> EXC {str(e)[:50]}")
+        print(f"     {label:30} -> EXC {str(e)[:50]}")
         return f"EXC:{e}"
 
 
