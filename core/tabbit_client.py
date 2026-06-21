@@ -3,10 +3,13 @@ import json
 import uuid
 import hashlib
 import base64
+import logging
 import urllib.parse
 from typing import AsyncGenerator
 
 import httpx
+
+logger = logging.getLogger("tabbit2openai")
 
 MODEL_MAP = {
     "best": "Default",
@@ -188,6 +191,8 @@ class TabbitClient:
                     f"Tabbit API error {resp.status_code}: {body.decode()}"
                 )
 
+            # 收集首个事件，用于诊断 492/493（身份/版本校验失败）
+            first_events = []
             current_event = None
             async for line in resp.aiter_lines():
                 if line.startswith("event:"):
@@ -202,6 +207,15 @@ class TabbitClient:
                     if current_event == "error":
                         msg = data.get("message", "unknown upstream error")
                         code = data.get("code", "")
+                        # 492/493 时附加诊断信息（content 长度/特征），定位触发条件
+                        if code in (492, 493):
+                            logger.warning(
+                                "upstream error %s | content_len=%d has_tools=%s "
+                                "model=%s session=%s unique_uuid=%s",
+                                code, len(content),
+                                "<invoke" in content or "[Tools]" in content,
+                                model, session_id, headers.get("unique-uuid", "")[:8],
+                            )
                         raise Exception(
                             f"Tabbit upstream error {code}: {msg}"
                         )
