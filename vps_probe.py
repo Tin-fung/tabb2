@@ -306,12 +306,84 @@ async def test_model_names(client):
     await try_model("真实name: byteplus/deepseek-v3-2", "byteplus/deepseek-v3-2")
 
 
+async def test_body_variants(client):
+    """系统性删/改 body 每个字段，定位 493 触发字段"""
+    print("\n" + "="*60)
+    print("[7] body 字段对照实验（逐个删/改）")
+    print("="*60)
+
+    async def make_session():
+        router_state = ["", {"children": ["chat", {"children": [["id","new","d"], {"children": ["__PAGE__",{},None,"refetch"]}, None, None]}, None, None]}, None, None]
+        h = {**base_headers("/chat/new"), "rsc": "1", "next-router-state-tree": urllib.parse.quote(json.dumps(router_state))}
+        r = await client.get(f"{BASE_URL}/chat/new", params={"_rsc":"auto"}, headers=h, cookies=cookies())
+        m = re.search(r"([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})", r.text)
+        return m.group(1) if m else None
+
+    async def try_body(label, body):
+        sid = await make_session()
+        if not sid:
+            print(f"  {label:40} -> NO_SESSION")
+            return
+        body = {**body, "chat_session_id": sid}
+        sh = {**base_headers(f"/chat/{sid}"), "Accept":"text/event-stream", "Content-Type":"application/json"}
+        try:
+            async with client.stream("POST", f"{BASE_URL}/chat/send", json=body, headers=sh, cookies=cookies()) as resp:
+                got = False; err = ""; txt = ""
+                async for line in resp.aiter_lines():
+                    if line.startswith("data:"):
+                        try:
+                            d = json.loads(line[5:].strip())
+                            if d.get("code") == 493: err = "493"
+                            elif d.get("code"): err = f"code={d.get('code')}"
+                            if d.get("content"): txt += d["content"]
+                        except: pass
+                    if "message_chunk" in line: got = True
+                if got:
+                    print(f"  🎉 {label:40} -> ✅ {txt[:50]!r}")
+                else:
+                    print(f"     {label:40} -> {err or '空'}")
+        except Exception as e:
+            print(f"     {label:40} -> EXC {str(e)[:40]}")
+
+    content = "hi"
+    base_body = {
+        "content": content, "selected_model": "best-model",
+        "agent_mode": False, "metadatas": {"html_content": f"<p>{content}</p>"},
+        "entity": {"key": hashlib.md5(b"").hexdigest(), "extras": {"type": "tab", "url": ""}},
+    }
+    # 基准
+    await try_body("基准(全字段)", base_body)
+    # 删 entity
+    b = {k:v for k,v in base_body.items() if k != "entity"}
+    await try_body("删entity", b)
+    # 删 metadatas
+    b = {k:v for k,v in base_body.items() if k != "metadatas"}
+    await try_body("删metadatas", b)
+    # 删 agent_mode
+    b = {k:v for k,v in base_body.items() if k != "agent_mode"}
+    await try_body("删agent_mode", b)
+    # 只留最小字段
+    await try_body("只content+model", {"content": content, "selected_model": "best-model"})
+    # entity 改 type
+    b = {**base_body, "entity": {"key": hashlib.md5(b"").hexdigest(), "extras": {"type": "none", "url": ""}}}
+    await try_body("entity.type=none", b)
+    # entity 加版本字段
+    b = {**base_body, "entity": {"key": hashlib.md5(b"").hexdigest(), "extras": {"type": "tab", "url": "", "version": "1.1.39"}}}
+    await try_body("entity.extras加version", b)
+    # 顶层加 version/client_version
+    b = {**base_body, "version": "1.1.39", "client_version": "1.1.39", "browser_version": "1.1.39"}
+    await try_body("顶层加version字段", b)
+    # 顶层加 client_info
+    b = {**base_body, "client_info": {"version": "1.1.39", "platform": "windows"}}
+    await try_body("加client_info", b)
+
+
 async def main():
     token_str = load_token()
     parse_token(token_str)
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(connect=15, read=60, write=15, pool=15), follow_redirects=False, verify=False) as client:
-        await test_model_names(client)
+        await test_body_variants(client)
 
         print("\n" + "="*60)
         print("诊断完成。把以上完整输出贴给本仙女。")
