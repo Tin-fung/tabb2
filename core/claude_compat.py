@@ -265,7 +265,61 @@ def map_claude_to_content(
     # 4. 末尾提示
     parts.append("[Assistant]:")
 
-    return "\n\n".join(parts)
+    text = "\n\n".join(parts)
+
+    # 5. 超长压缩：上游 /api/v1/chat/completion 对超长 content 返回 492
+    # Claude Code 的 tools 定义 + 长历史可能达 15 万字符，需压缩到安全阈值内
+    MAX_CONTENT_LEN = 50000  # 安全阈值（上游实测 14.9 万必 492，留足余量）
+    if len(text) > MAX_CONTENT_LEN:
+        text = _compress_content(parts, MAX_CONTENT_LEN)
+
+    return text
+
+
+def _compress_content(parts: list[str], max_len: int) -> str:
+    """压缩超长 content，优先级：保留最新消息 + 工具名，截断旧历史和详细 schema"""
+    # 找到 tools 部分（通常在 [System] 开头含 <antml:tools>）
+    tool_part = ""
+    other_parts = []
+    for p in parts:
+        if "<antml\\b:tools>" in p or "<function_list>" in p:
+            tool_part = p
+        else:
+            other_parts.append(p)
+
+    # 压缩 tools：只保留工具名和一句话描述，去掉详细 parameter schema
+    if tool_part and len(tool_part) > 5000:
+        import re as _re
+        # 提取所有 <function name="xxx"> 的 name
+        names = _re.findall(r'<function\s+name="([^"]+)"', tool_part)
+        if names:
+            tool_part = (
+                "[System]: 可用工具（详细参数已省略，按需调用）: "
+                + ", ".join(names)
+            )
+
+    # 重组：tool_part（已压缩）+ 保留最后几条消息（最新上下文最重要）
+    compressed = [tool_part] if tool_part else []
+    # 倒序保留消息，直到接近上限
+    remaining = max_len - len("\n\n".join(compressed)) - 200 if compressed else max_len - 200
+    kept = []
+    for p in reversed(other_parts):
+        if remaining <= 0:
+            break
+        if len(p) + 4 <= remaining:
+            kept.append(p)
+            remaining -= len(p) + 4
+        else:
+            # 截断超长单条
+            kept.append(p[:remaining] + "\n...[已截断]")
+            remaining = 0
+    kept.reverse()
+    compressed.extend(kept)
+    result = "\n\n".join(compressed)
+    # 兜底：仍超长就硬截断
+    if len(result) > max_len:
+        result = result[:max_len - 50] + "\n\n[Assistant]:"
+    return result
 
 
 # ── 流解析器 ──
