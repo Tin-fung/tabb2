@@ -566,7 +566,7 @@ async function renderSettings(el) {
             <label class="block text-sm text-zinc-400 mb-1.5">浏览器版本号（绕过版本校验）<span class="text-xs text-zinc-600 ml-1">browser_version</span></label>
             <div class="flex gap-2">
               <input id="sBrowserVersion" type="text" value="${esc(s.tabbit.browser_version || '1.1.39')}" class="flex-1 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100" placeholder="例如 1.1.39">
-              <button onclick="checkLatestVersion()" id="checkVerBtn" class="shrink-0 rounded-lg border border-zinc-700 px-3 py-2 text-xs hover:bg-zinc-800 transition-colors whitespace-nowrap">查最新</button>
+              <button onclick="checkLatestVersion()" id="checkVerBtn" class="shrink-0 rounded-lg border border-zinc-700 px-3 py-2 text-xs hover:bg-zinc-800 transition-colors whitespace-nowrap">检测版本</button>
             </div>
           </div>
           <div>
@@ -711,39 +711,27 @@ async function refreshModelsInSettings() {
   } catch (e) { alert('刷新失败: ' + e.message); }
 }
 
-// 查询上游最新版本，对比当前配置
+// 检测当前版本是否被上游接受（实战探测 x-req-ctx）
 async function checkLatestVersion() {
   const btn = document.getElementById('checkVerBtn');
   const orig = btn.textContent;
-  btn.disabled = true; btn.textContent = '查询中...';
+  btn.disabled = true; btn.textContent = '检测中...';
   try {
     const r = await api('/version');
     if (!r.ok) {
-      alert('查询失败: ' + (r.error || '未知错误') + '\n\n可手动运行 check_tabbit_version.sh 查本机 Tabbit 版本');
+      alert('检测失败: ' + (r.error || '未知错误') + '\n\n可手动运行 check_tabbit_version.sh 查本机 Tabbit 版本');
       return;
     }
-    const cur = r.current, lat = r.latest;
-    if (r.is_latest === true) {
-      alert(`✅ 版本已是最新\n\n当前: ${cur.browser_version}(${cur.sparkle_version})`);
-    } else if (r.is_latest === false && lat.browser_version) {
-      const apply = confirm(
-        `⚠️ Tabbit 已更新！\n\n` +
-        `当前: ${cur.browser_version}(${cur.sparkle_version})\n` +
-        `最新: ${lat.browser_version}(${lat.sparkle_version || '?'})\n\n` +
-        `版本过期会导致 x-req-ctx 校验失败触发 493。\n` +
-        `是否自动填入最新版本号？（填入后还需点"保存设置"）`
-      );
-      if (apply) {
-        document.getElementById('sBrowserVersion').value = lat.browser_version;
-        if (lat.sparkle_version) document.getElementById('sSparkleVersion').value = lat.sparkle_version;
-        alert('已填入最新版本号，请点击"保存设置"并重启容器');
-      }
+    const cur = r.current;
+    if (r.is_valid === true) {
+      alert(`✅ 版本有效\n\n当前: ${cur.browser_version}(${cur.sparkle_version})\nx-req-ctx: ${r.x_req_ctx}\n\n${r.detail}`);
+    } else if (r.is_valid === false) {
+      alert(`⚠️ 版本过期！\n\n当前: ${cur.browser_version}(${cur.sparkle_version})\n\n${r.detail}\n\n原始响应: ${r.raw || ''}`);
     } else {
-      // 接口可访问但字段名不识别，展示原始响应
-      alert(`版本接口可访问，但未能自动识别最新版本号字段。\n\n当前: ${cur.browser_version}(${cur.sparkle_version})\n\n原始响应:\n${JSON.stringify(r.raw, null, 2).slice(0, 500)}\n\n可手动运行 check_tabbit_version.sh 查本机 Tabbit 版本`);
+      alert(`❓ 无法确定\n\n当前: ${cur.browser_version}(${cur.sparkle_version})\n\n${r.detail}\n\n建议本机运行 check_tabbit_version.sh 查最新版本`);
     }
   } catch (e) {
-    alert('查询失败: ' + e.message);
+    alert('检测失败: ' + e.message + '\n\n可手动运行 check_tabbit_version.sh 查本机 Tabbit 版本');
   } finally {
     btn.disabled = false; btn.textContent = orig;
   }
