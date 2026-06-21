@@ -555,8 +555,15 @@ async function renderSettings(el) {
             <input id="sClientId" type="text" value="${esc(s.tabbit.client_id)}" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100">
           </div>
           <div>
-            <label class="block text-sm text-zinc-400 mb-1.5">浏览器版本号（绕过版本校验）</label>
-            <input id="sBrowserVersion" type="text" value="${esc(s.tabbit.browser_version || '1.1.39')}" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100" placeholder="例如 1.1.39">
+            <label class="block text-sm text-zinc-400 mb-1.5">浏览器版本号（绕过版本校验）<span class="text-xs text-zinc-600 ml-1">browser_version</span></label>
+            <div class="flex gap-2">
+              <input id="sBrowserVersion" type="text" value="${esc(s.tabbit.browser_version || '1.1.39')}" class="flex-1 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100" placeholder="例如 1.1.39">
+              <button onclick="checkLatestVersion()" id="checkVerBtn" class="shrink-0 rounded-lg border border-zinc-700 px-3 py-2 text-xs hover:bg-zinc-800 transition-colors whitespace-nowrap">查最新</button>
+            </div>
+          </div>
+          <div>
+            <label class="block text-sm text-zinc-400 mb-1.5">Sparkle 构建号<span class="text-xs text-zinc-600 ml-1">sparkle_version</span></label>
+            <input id="sSparkleVersion" type="text" value="${esc(s.tabbit.sparkle_version || 10101039)}" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100" placeholder="例如 10101039">
           </div>
           <div>
             <label class="block text-sm text-zinc-400 mb-1.5">伪装默认浏览器（领免费 Pro 会员）</label>
@@ -674,6 +681,7 @@ async function saveSettings() {
         base_url: document.getElementById('sBaseUrl').value,
         client_id: document.getElementById('sClientId').value,
         browser_version: document.getElementById('sBrowserVersion').value,
+        sparkle_version: parseInt(document.getElementById('sSparkleVersion').value) || 10101039,
         default_browser: document.getElementById('sDefaultBrowser').value === 'true',
         api_key: document.getElementById('sApiKey').value,
         claude_default_model: document.getElementById('sClaudeModel').value,
@@ -693,6 +701,44 @@ async function refreshModelsInSettings() {
     await renderSettings(document.getElementById('pageContent'));
     alert(r.ok ? `刷新成功，共 ${r.count} 个模型` : '刷新失败');
   } catch (e) { alert('刷新失败: ' + e.message); }
+}
+
+// 查询上游最新版本，对比当前配置
+async function checkLatestVersion() {
+  const btn = document.getElementById('checkVerBtn');
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '查询中...';
+  try {
+    const r = await api('/version');
+    if (!r.ok) {
+      alert('查询失败: ' + (r.error || '未知错误') + '\n\n可手动运行 check_tabbit_version.sh 查本机 Tabbit 版本');
+      return;
+    }
+    const cur = r.current, lat = r.latest;
+    if (r.is_latest === true) {
+      alert(`✅ 版本已是最新\n\n当前: ${cur.browser_version}(${cur.sparkle_version})`);
+    } else if (r.is_latest === false && lat.browser_version) {
+      const apply = confirm(
+        `⚠️ Tabbit 已更新！\n\n` +
+        `当前: ${cur.browser_version}(${cur.sparkle_version})\n` +
+        `最新: ${lat.browser_version}(${lat.sparkle_version || '?'})\n\n` +
+        `版本过期会导致 x-req-ctx 校验失败触发 493。\n` +
+        `是否自动填入最新版本号？（填入后还需点"保存设置"）`
+      );
+      if (apply) {
+        document.getElementById('sBrowserVersion').value = lat.browser_version;
+        if (lat.sparkle_version) document.getElementById('sSparkleVersion').value = lat.sparkle_version;
+        alert('已填入最新版本号，请点击"保存设置"并重启容器');
+      }
+    } else {
+      // 接口可访问但字段名不识别，展示原始响应
+      alert(`版本接口可访问，但未能自动识别最新版本号字段。\n\n当前: ${cur.browser_version}(${cur.sparkle_version})\n\n原始响应:\n${JSON.stringify(r.raw, null, 2).slice(0, 500)}\n\n可手动运行 check_tabbit_version.sh 查本机 Tabbit 版本`);
+    }
+  } catch (e) {
+    alert('查询失败: ' + e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = orig;
+  }
 }
 
 async function changePassword() {
