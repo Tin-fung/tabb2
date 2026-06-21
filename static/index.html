@@ -51,6 +51,7 @@ const API = '/api/admin';
 let token = localStorage.getItem('admin_token') || '';
 let currentPage = 'dashboard';
 let autoRefreshTimer = null;
+let lastDiagResult = null; // 缓存诊断结果，切页面后恢复
 
 // ── Fetch helpers ──
 
@@ -782,6 +783,8 @@ async function renderDiagnose(el) {
     <div id="diagHealth" class="mb-6"></div>
     <div id="diagResult"></div>`;
   await loadDiagHealth();
+  // 恢复上次诊断结果（切页面不丢失）
+  if (lastDiagResult) renderDiagResult(lastDiagResult);
 }
 
 // 健康概览（轻量 /health，自动加载）
@@ -817,44 +820,52 @@ async function runDiagnose() {
   el.innerHTML = '<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-zinc-400">正在运行深度诊断（会实测上游连接）...</p></div>';
   try {
     const r = await api('/diagnose');
-    const s = r.summary;
-    const overallColor = { pass: 'text-emerald-400', warn: 'text-amber-400', fail: 'text-red-400' }[s.overall] || 'text-zinc-400';
-    const checkRow = (c) => {
-      const color = { pass: 'text-emerald-400', warn: 'text-amber-400', fail: 'text-red-400' }[c.status] || 'text-zinc-400';
-      const icon = { pass: '✓', warn: '!', fail: '✗' }[c.status] || '?';
-      return `<tr class="border-b border-zinc-800/50">
-        <td class="px-5 py-3"><span class="${color} mr-2">${icon}</span><span class="text-zinc-200">${esc(c.name)}</span></td>
-        <td class="px-5 py-3"><span class="${color} text-xs">${c.status}</span></td>
-        <td class="px-5 py-3 text-zinc-500 text-xs font-mono break-all">${esc(c.detail || '')}</td>
-      </tr>`;
-    };
-    el.innerHTML = `
-      <div class="rounded-xl border border-zinc-800 bg-zinc-900">
-        <div class="px-5 py-4 border-b border-zinc-800 flex items-center justify-between">
-          <h3 class="text-sm font-medium">深度诊断结果</h3>
-          <div class="flex items-center gap-3 text-xs">
-            <span class="${overallColor} font-medium">总体: ${s.overall}</span>
-            <span class="text-emerald-400">通过 ${s.pass}</span>
-            <span class="text-amber-400">警告 ${s.warn}</span>
-            <span class="text-red-400">失败 ${s.fail}</span>
-          </div>
-        </div>
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead><tr class="text-zinc-400 text-left border-b border-zinc-800">
-              <th class="px-5 py-3 font-medium">检查项</th>
-              <th class="px-5 py-3 font-medium">状态</th>
-              <th class="px-5 py-3 font-medium">详情</th>
-            </tr></thead>
-            <tbody>${(r.checks || []).map(checkRow).join('')}</tbody>
-          </table>
-        </div>
-      </div>`;
+    lastDiagResult = r; // 缓存，切页面后恢复
+    renderDiagResult(r);
   } catch (e) {
     el.innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">诊断失败: ${esc(e.message)}</p></div>`;
   } finally {
     btn.disabled = false; btn.textContent = '运行深度诊断';
   }
+}
+
+// 渲染诊断结果（runDiagnose 和页面恢复共用）
+function renderDiagResult(r) {
+  const el = document.getElementById('diagResult');
+  if (!el || !r) return;
+  const s = r.summary || {};
+  const overallColor = { pass: 'text-emerald-400', warn: 'text-amber-400', fail: 'text-red-400' }[s.overall] || 'text-zinc-400';
+  const checkRow = (c) => {
+    const color = { pass: 'text-emerald-400', warn: 'text-amber-400', fail: 'text-red-400' }[c.status] || 'text-zinc-400';
+    const icon = { pass: '✓', warn: '!', fail: '✗' }[c.status] || '?';
+    return `<tr class="border-b border-zinc-800/50">
+      <td class="px-5 py-3"><span class="${color} mr-2">${icon}</span><span class="text-zinc-200">${esc(c.name)}</span></td>
+      <td class="px-5 py-3"><span class="${color} text-xs">${c.status}</span></td>
+      <td class="px-5 py-3 text-zinc-500 text-xs font-mono break-all">${esc(c.detail || '')}</td>
+    </tr>`;
+  };
+  el.innerHTML = `
+    <div class="rounded-xl border border-zinc-800 bg-zinc-900">
+      <div class="px-5 py-4 border-b border-zinc-800 flex items-center justify-between">
+        <h3 class="text-sm font-medium">深度诊断结果</h3>
+        <div class="flex items-center gap-3 text-xs">
+          <span class="${overallColor} font-medium">总体: ${s.overall || '?'}</span>
+          <span class="text-emerald-400">通过 ${s.pass || 0}</span>
+          <span class="text-amber-400">警告 ${s.warn || 0}</span>
+          <span class="text-red-400">失败 ${s.fail || 0}</span>
+        </div>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+          <thead><tr class="text-zinc-400 text-left border-b border-zinc-800">
+            <th class="px-5 py-3 font-medium">检查项</th>
+            <th class="px-5 py-3 font-medium">状态</th>
+            <th class="px-5 py-3 font-medium">详情</th>
+          </tr></thead>
+          <tbody>${(r.checks || []).map(checkRow).join('')}</tbody>
+        </table>
+      </div>
+    </div>`;
 }
 
 // ── Helpers ──

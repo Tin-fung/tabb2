@@ -32,11 +32,32 @@ def init(token_manager: TokenManager, config: ConfigManager, log_store: LogStore
 
 
 class ChatMessage(BaseModel):
+    # content 兼容字符串和多模态数组（Cherry Studio 等客户端可能发数组）
     role: str
-    content: str
+    content: str | list | None = None
+
+    def text_content(self) -> str:
+        """提取纯文本内容，兼容字符串和数组格式"""
+        if self.content is None:
+            return ""
+        if isinstance(self.content, str):
+            return self.content
+        if isinstance(self.content, list):
+            parts = []
+            for part in self.content:
+                if isinstance(part, str):
+                    parts.append(part)
+                elif isinstance(part, dict):
+                    # OpenAI 多模态: {"type":"text","text":"..."} 或 {"type":"image_url",...}
+                    if part.get("type") == "text":
+                        parts.append(part.get("text", ""))
+            return "\n".join(parts)
+        return str(self.content)
 
 
 class ChatCompletionRequest(BaseModel):
+    # 兼容客户端额外字段（temperature/max_tokens/top_p 等），忽略不用即可
+    model_config = {"extra": "ignore"}
     model: str = "best"
     messages: list[ChatMessage]
     stream: bool = False
@@ -45,7 +66,7 @@ class ChatCompletionRequest(BaseModel):
 def _build_content(messages: list[ChatMessage]) -> str:
     system_prompt = _cfg.get("proxy", "system_prompt") if _cfg else ""
     if len(messages) == 1 and not system_prompt:
-        return messages[0].content
+        return messages[0].text_content()
     parts = []
     if system_prompt:
         parts.append(f"[System]: {system_prompt}")
@@ -53,7 +74,7 @@ def _build_content(messages: list[ChatMessage]) -> str:
         label = {"user": "User", "assistant": "Assistant", "system": "System"}.get(
             m.role, m.role.capitalize()
         )
-        parts.append(f"[{label}]: {m.content}")
+        parts.append(f"[{label}]: {m.text_content()}")
     return "\n\n".join(parts) + "\n\n[Assistant]:"
 
 
