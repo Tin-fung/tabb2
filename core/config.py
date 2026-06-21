@@ -50,6 +50,8 @@ class ConfigManager:
             with open(self.path, "r", encoding="utf-8") as f:
                 saved = json.load(f)
             config = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), saved)
+            # 迁移：强制升级上游协议相关字段（旧配置值已失效，会导致 493/492）
+            self._migrate_tabbit_config(config)
             # 确保新字段被写入
             self._save(config)
             return config
@@ -61,6 +63,21 @@ class ConfigManager:
         config["admin"]["salt"] = salt
         self._save(config)
         return config
+
+    def _migrate_tabbit_config(self, config: dict):
+        """迁移 tabbit 配置：旧域名 web.tabbitbrowser.com 已废弃，
+        旧版本号(1.1)会导致 x-req-ctx 编码错误触发 493。
+        强制升级到新值。"""
+        tabbit = config.setdefault("tabbit", {})
+        # 旧域名 → 新域名
+        if tabbit.get("base_url") in (None, "https://web.tabbitbrowser.com"):
+            tabbit["base_url"] = "https://web.tabbit.ai"
+        # 旧版本号 1.1 → 1.1.39（x-req-ctx 编码需要完整三段版本号）
+        if tabbit.get("browser_version") in (None, "1.1", "145"):
+            tabbit["browser_version"] = "1.1.39"
+        # sparkle_version 默认值
+        if not tabbit.get("sparkle_version"):
+            tabbit["sparkle_version"] = 10101039
 
     def _save(self, config: dict | None = None):
         if config is None:
