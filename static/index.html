@@ -509,6 +509,19 @@ async function deleteToken(id, name) {
 
 async function renderSettings(el) {
   const s = await api('/settings');
+  // 并行拉取动态模型清单（用于 Claude 默认模型下拉 + 模型清单展示）
+  let models = [];
+  let modelsReady = false;
+  try {
+    const m = await api('/models');
+    models = m.models || [];
+    modelsReady = !!m.ready;
+  } catch (e) { /* 拉取失败用静态兜底，不阻塞 */ }
+  // 下拉选项：动态模型优先，兜底静态列表
+  const selectOpts = (models.length ? models : [
+    {id:'best'},{id:'gpt-5.2-chat'},{id:'gpt-5.1-chat'},{id:'gemini-3-pro'},
+    {id:'claude-sonnet-4.5'},{id:'glm-5'},{id:'deepseek-v3.2'}
+  ]).map(m => '<option value="' + esc(m.id) + '"' + (s.claude?.default_model === m.id ? ' selected' : '') + '>' + esc(m.tabbit_display_name || m.id) + '</option>').join('');
   el.innerHTML = `
     <h2 class="text-2xl font-semibold mb-6">Settings</h2>
     <div class="space-y-6">
@@ -544,6 +557,34 @@ async function renderSettings(el) {
           </div>
         </div>
       </div>
+      <!-- 模型清单（动态拉取）-->
+      <div class="rounded-xl border border-zinc-800 bg-zinc-900">
+        <div class="px-5 py-4 border-b border-zinc-800 flex items-center justify-between">
+          <div class="flex items-center gap-2">
+            <h3 class="text-sm font-medium text-zinc-300">模型清单</h3>
+            <span class="text-xs text-zinc-500">动态拉取 · ${modelsReady ? '已缓存' : '兜底静态表'}</span>
+          </div>
+          <button onclick="refreshModelsInSettings()" class="rounded-lg border border-zinc-700 px-3 py-1 text-xs hover:bg-zinc-800 transition-colors">刷新</button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead><tr class="text-zinc-400 text-left border-b border-zinc-800">
+              <th class="px-5 py-3 font-medium">模型 ID</th>
+              <th class="px-5 py-3 font-medium">显示名</th>
+              <th class="px-5 py-3 font-medium">图片</th>
+              <th class="px-5 py-3 font-medium">工具</th>
+            </tr></thead>
+            <tbody>
+              ${models.map(m => `<tr class="border-b border-zinc-800/50 hover:bg-zinc-800/30">
+                <td class="px-5 py-3 font-mono text-xs text-zinc-200">${esc(m.id)}</td>
+                <td class="px-5 py-3 text-zinc-400">${esc(m.tabbit_display_name || m.id)}</td>
+                <td class="px-5 py-3">${m.supports_images ? '<span class="text-emerald-400">✓</span>' : '<span class="text-zinc-600">—</span>'}</td>
+                <td class="px-5 py-3">${m.supports_tools ? '<span class="text-emerald-400">✓</span>' : '<span class="text-zinc-600">—</span>'}</td>
+              </tr>`).join('') || '<tr><td colspan="4" class="px-5 py-8 text-center text-zinc-500">暂无模型（点刷新拉取）</td></tr>'}
+            </tbody>
+          </table>
+        </div>
+      </div>
       <!-- Proxy -->
       <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-6">
         <h3 class="text-sm font-medium text-zinc-300 mb-4">代理配置</h3>
@@ -558,10 +599,9 @@ async function renderSettings(el) {
         <div class="max-w-xs mb-4">
           <label class="block text-sm text-zinc-400 mb-1.5">默认 Tabbit 模型</label>
           <select id="sClaudeModel" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100">
-            ${['best','gpt-5.2-chat','gpt-5.1-chat','gemini-3.1-pro','gemini-3-flash','gemini-2.5-flash','claude-sonnet-4.6','claude-haiku-4.5','glm-5','deepseek-v3.2','minimax-m2.5','kimi-k2.5','qwen3.5-plus','doubao-seed-1.8'].map(m =>
-              '<option value="' + m + '"' + (s.claude?.default_model === m ? ' selected' : '') + '>' + m + '</option>'
-            ).join('')}
+            ${selectOpts}
           </select>
+          <p class="text-xs text-zinc-500 mt-1">${models.length ? `动态拉取 ${models.length} 个模型` : '动态拉取失败，显示静态兜底'}</p>
         </div>
         <div class="rounded-lg bg-zinc-800/50 border border-zinc-700/50 p-4">
           <p class="text-xs text-zinc-400 mb-2 font-medium">Claude Code 连接配置</p>
@@ -633,6 +673,15 @@ async function saveSettings() {
     });
     alert('设置已保存（端口变更需重启生效）');
   } catch (e) { alert('保存失败: ' + e.message); }
+}
+
+// 刷新动态模型清单后重渲染 settings 页
+async function refreshModelsInSettings() {
+  try {
+    const r = await api('/models/refresh', { method: 'POST' });
+    await renderSettings(document.getElementById('pageContent'));
+    alert(r.ok ? `刷新成功，共 ${r.count} 个模型` : '刷新失败');
+  } catch (e) { alert('刷新失败: ' + e.message); }
 }
 
 async function changePassword() {
@@ -731,10 +780,8 @@ async function renderDiagnose(el) {
       <button onclick="runDiagnose()" id="diagRunBtn" class="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 transition-colors">运行深度诊断</button>
     </div>
     <div id="diagHealth" class="mb-6"></div>
-    <div id="diagModels" class="mb-6"></div>
     <div id="diagResult"></div>`;
   await loadDiagHealth();
-  await loadDiagModels();
 }
 
 // 健康概览（轻量 /health，自动加载）
@@ -760,54 +807,6 @@ async function loadDiagHealth() {
   } catch (e) {
     document.getElementById('diagHealth').innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">健康检查失败: ${esc(e.message)}</p></div>`;
   }
-}
-
-// 模型清单（动态 + 刷新）
-async function loadDiagModels() {
-  const el = document.getElementById('diagModels');
-  el.innerHTML = '<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-zinc-400">加载模型清单...</p></div>';
-  try {
-    const m = await api('/models');
-    const models = m.models || [];
-    document.getElementById('diagModels').innerHTML = `
-      <div class="rounded-xl border border-zinc-800 bg-zinc-900">
-        <div class="px-5 py-4 border-b border-zinc-800 flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <h3 class="text-sm font-medium">模型清单</h3>
-            <span class="text-xs text-zinc-500">动态拉取 · ${m.ready ? '已缓存' : '兜底静态表'}</span>
-          </div>
-          <button onclick="refreshModels()" class="rounded-lg border border-zinc-700 px-3 py-1 text-xs hover:bg-zinc-800 transition-colors">刷新</button>
-        </div>
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead><tr class="text-zinc-400 text-left border-b border-zinc-800">
-              <th class="px-5 py-3 font-medium">模型 ID</th>
-              <th class="px-5 py-3 font-medium">显示名</th>
-              <th class="px-5 py-3 font-medium">图片</th>
-              <th class="px-5 py-3 font-medium">工具</th>
-            </tr></thead>
-            <tbody>
-              ${models.map(m => `<tr class="border-b border-zinc-800/50 hover:bg-zinc-800/30">
-                <td class="px-5 py-3 font-mono text-xs text-zinc-200">${esc(m.id)}</td>
-                <td class="px-5 py-3 text-zinc-400">${esc(m.tabbit_display_name || m.id)}</td>
-                <td class="px-5 py-3">${m.supports_images ? '<span class="text-emerald-400">✓</span>' : '<span class="text-zinc-600">—</span>'}</td>
-                <td class="px-5 py-3">${m.supports_tools ? '<span class="text-emerald-400">✓</span>' : '<span class="text-zinc-600">—</span>'}</td>
-              </tr>`).join('') || '<tr><td colspan="4" class="px-5 py-8 text-center text-zinc-500">暂无模型</td></tr>'}
-            </tbody>
-          </table>
-        </div>
-      </div>`;
-  } catch (e) {
-    document.getElementById('diagModels').innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">加载失败: ${esc(e.message)}</p></div>`;
-  }
-}
-
-async function refreshModels() {
-  try {
-    const r = await api('/models/refresh', { method: 'POST' });
-    await loadDiagModels();
-    alert(r.ok ? `刷新成功，共 ${r.count} 个模型` : '刷新失败');
-  } catch (e) { alert('刷新失败: ' + e.message); }
 }
 
 // 深度诊断
