@@ -190,7 +190,45 @@ map_claude_to_content(body)
 2. ✅ references 分流突破 20421 网关限制，实测 100 万字符可读
 3. ✅ 超长 system + tools 场景工具调用仍正常（schema 压缩不影响）
 4. ✅ 实战 82k 总长请求暗号命中 + 工具调用双通过
+5. ✅ 关键指令保护：软偏好遵守率 25%→100%（Default 模型），硬约束 80%+（Sonnet-4.6）
 
 **此前静态分析的担忧（tools schema 被砍导致工具失效）被真数据证伪**——模型能力足以在 schema 压缩后仍正确调工具。
 
 唯一真实成本：超长请求耗时较长（5~22s），这是上游处理时间，非项目可优化项。
+
+---
+
+## 八、模型路由修正（2026-06-22 补充）
+
+### 8.1 发现的问题
+
+测试时全程用 `claude-3-7-sonnet-20250219`，但 Tabbit 模型列表**无此模型**。原 `CLAUDE_MODEL_MAP` 缺 `claude-3-7-sonnet` 前缀，导致兜底路由到 `Default`（免费无限）。用户以为在用 Claude，实际用 Default。
+
+### 8.2 修正
+
+`CLAUDE_MODEL_MAP` 改为按型号族映射：
+- `claude-opus-*` → `Claude-Opus-4.8`（premium_only，消额度）
+- `claude-sonnet-*`（含 3-5/3-7/4-x）→ `Claude-Sonnet-4.6`（premium_only）
+- `claude-haiku-*` → `Claude-Haiku-4.5`（free_metered）
+
+### 8.3 模型间行为差异（实测）
+
+不同模型对 references 内容的注意力和配合度**差异显著**：
+
+| 测试 | Default | Claude-Sonnet-4.6 |
+|---|---|---|
+| 软偏好（加emoji）遵守率 | 100% (8/8) | 0% (0/5) |
+| 硬约束（中文大写）遵守率 | 100% | 80% (4/5) |
+| 暗号检索（80k深度）| ✅ 命中 | ❌ 拒绝（判为 prompt injection） |
+
+**关键洞察**：
+- Sonnet-4.6 对"加 emoji"等软偏好**完全不配合**（即使偏好放近期 content 也 0%）——这是模型本身风格保守，**非分流问题**
+- Sonnet-4.6 把 references 里的暗号识别为"提示词注入"并拒绝转述——**安全意识强**，对 references 内容更审慎
+- Default 模型对 references 内容最配合（软偏好/暗号都认）
+
+**对 Claude Code 场景的影响**：
+- 用 Default：references 分流效果最好，软偏好也守
+- 用 Claude-Sonnet-4.6：硬约束/任务相关偏好仍守，但软偏好可能丢（模型本身特性，非项目可优化）
+- 选模型时权衡：Default 免费无限但能力较弱；Sonnet/Opus 能力强但对 references 内容更审慎
+
+**此前用 claude-3-7-sonnet 测出的 100% 软偏好遵守率，实际是 Default 模型的表现**。修正路由后用真实 Sonnet-4.6 重测，软偏好 0%——这是模型差异，不影响"关键指令保护"对硬约束的有效性（Sonnet-4.6 硬约束 80%）。
