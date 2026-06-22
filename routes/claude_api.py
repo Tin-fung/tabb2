@@ -66,13 +66,23 @@ class TTLCache:
 _fallback_clients = TTLCache(ttl=3600)  # 1 小时过期
 
 # Claude 模型名 → Tabbit 模型名映射
+# Claude 模型名 → Tabbit 对应型号族。
+# 按型号族映射（opus→Opus-4.8, sonnet→Sonnet-4.6, haiku→Haiku-4.5），
+# 让用户选 opus 真用 premium Opus（消额度），选 haiku 用免费 Haiku。
+# Tabbit 侧无 3.x/4.0-4.4，统一归到当前最新同族型号。
+# 顺序敏感：更具体的前缀放前面（opus-4-1 优先于 opus）。
 CLAUDE_MODEL_MAP = {
-    "claude-opus-4-6": "best",
-    "claude-sonnet-4-6": "best",
-    "claude-sonnet-4-5": "best",
-    "claude-haiku-4-5": "best",
-    "claude-3-5-sonnet": "best",
-    "claude-3-5-haiku": "best",
+    # Opus 族 → Claude-Opus-4.8 (premium_only)
+    "claude-opus-4": "Claude-Opus-4.8",
+    "claude-opus-3": "Claude-Opus-4.8",
+    # Sonnet 族 → Claude-Sonnet-4.6 (premium_only)
+    "claude-sonnet-4": "Claude-Sonnet-4.6",
+    "claude-sonnet-3": "Claude-Sonnet-4.6",
+    "claude-3-7-sonnet": "Claude-Sonnet-4.6",
+    "claude-3-5-sonnet": "Claude-Sonnet-4.6",
+    # Haiku 族 → Claude-Haiku-4.5 (free_metered)
+    "claude-haiku-4": "Claude-Haiku-4.5",
+    "claude-3-5-haiku": "Claude-Haiku-4.5",
 }
 
 
