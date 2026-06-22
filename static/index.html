@@ -580,6 +580,14 @@ async function renderSettings(el) {
               <option value="false" ${s.tabbit.default_browser === false ? 'selected' : ''}>关闭（普通用户）</option>
             </select>
           </div>
+          <div>
+            <label class="block text-sm text-zinc-400 mb-1.5">SSL 证书验证</label>
+            <select id="sVerifySsl" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100">
+              <option value="false" ${s.tabbit.verify_ssl !== true ? 'selected' : ''}>关闭（开发/测试环境，方便调试）</option>
+              <option value="true" ${s.tabbit.verify_ssl === true ? 'selected' : ''}>开启（生产环境，防中间人攻击）</option>
+            </select>
+            <p class="text-xs text-zinc-500 mt-1">验证上游服务器 SSL 证书真伪，生产环境建议开启</p>
+          </div>
         </div>
       </div>
       <!-- 模型清单（动态拉取）-->
@@ -691,6 +699,7 @@ async function saveSettings() {
         browser_version: document.getElementById('sBrowserVersion').value,
         sparkle_version: parseInt(document.getElementById('sSparkleVersion').value) || 10101039,
         default_browser: document.getElementById('sDefaultBrowser').value === 'true',
+        verify_ssl: document.getElementById('sVerifySsl').value === 'true',
         api_key: document.getElementById('sApiKey').value,
         claude_default_model: document.getElementById('sClaudeModel').value,
         openai_system_prompt: document.getElementById('sOpenaiPrompt').value,
