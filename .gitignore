@@ -11,3 +11,8 @@ __pycache__/
 .claude/
 data/
 config.json
+
+# mitmproxy 抓包运行时日志（evidence 是存档，保留）
+logs/capture_agent.log
+logs/*.log
+!logs/capture_agent_evidence.log

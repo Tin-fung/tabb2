@@ -71,10 +71,80 @@ Tabbit 真机发工具调用/agent 任务时，**极可能**是 `agent_mode: Tru
 
 ## 下一步（需大BOSS配合）
 
-1. 启动 mitmproxy（`scripts/capture_all.py`）拦截 Tabbit 客户端流量
+1. 启动 mitmproxy（`scripts/capture_agent.py`）拦截 Tabbit 客户端流量
 2. 大BOSS 在真机 Tabbit 客户端触发一个 agent 任务（如"帮我搜索今天的科技新闻"）
 3. 抓到 `/api/v1/chat/completion` 真实 payload，对比 `agent_mode` / `task_name` / 工具字段
 4. 据此决定走方案 A 还是 B
+
+---
+
+## 🎯 真机抓包实测（2026-06-22 23:20）——真相翻盘
+
+用 `scripts/capture_agent.py`（mitmproxy 插件）+ `Tabbit --proxy-server=http://127.0.0.1:8080` 抓到真机 agent 任务的真实 payload。证据存档 `logs/capture_agent_evidence.log`。
+
+### 真机 agent 任务请求（`POST /api/v1/chat/completion`）
+
+```json
+{
+  "chat_session_id": "b1b562d1-...",
+  "message_id": null,
+  "content": "帮我搜索今天的科技新闻",
+  "selected_model": "Default",
+  "parallel_group_id": null,
+  "task_name": "chat",
+  "agent_mode": false,
+  "metadatas": {"html_content": "<p>帮我搜索今天的科技新闻</p>"},
+  "references": [],
+  "entity": {"key": "d41d8cd98f00b204e9800998ecf8427e", "extras": {"type": "tab", "url": ""}}
+}
+```
+
+**关键发现：真机触发 agent 任务时，`agent_mode: false`、`task_name: "chat"`、`references: []`——和普通聊天请求一模一样！没有任何工具定义字段，content 就是裸用户消息。**
+
+本项目之前怀疑"真机走 `agent_mode: true` + 专用字段"——**彻底证伪**。`agent_mode` 这个字段真机就是硬编码 `false`。
+
+### 上游 SSE 返回的工具调用事件
+
+```
+event: ready
+event: message_start
+event: message_tool_call_delta   ← 工具调用增量
+event: message_tool_calls        ← 完整工具调用 (parallel_web_search)
+event: message_finish
+event: tool_start                ← 上游服务端开始执行工具
+event: tool_finish               ← 工具执行结果（搜索到的网页内容）
+```
+
+工具调用 `tool_call_id: call_xxx`，`tool_call_name: parallel_web_search`——**工具是上游服务端硬编码的白名单**，由模型自主决定调用，通过专用 SSE 事件返回。
+
+### Root cause 彻底重定性
+
+之前"工具协议被当 prompt injection"——对了一半。完整真相：
+
+1. **Tabbit 上游工具集是服务端硬编码白名单**（parallel_web_search / browser_task_tool / show_widget / memory_search），**不接受外部工具定义**。客户端无法传 write_file/Bash/Edit 这种自定义工具。
+2. **真机 agent 任务的 payload 和普通聊天完全一样**——工具调用 100% 由上游模型自主决定，客户端没有任何"启用工具"的字段。
+3. 本项目把 Claude Code 的工具 schema 塞进 content，上游模型看到"write_file 这种外部工具定义"→ 当 prompt injection 拒绝，或静默空回复。
+4. **即使上游调用了工具，它返回的是 `message_tool_calls` / `tool_start` / `tool_finish` 专用 SSE 事件**，本项目 `ToolifyParser` 只认 `<<CALL_xxx>>` + `<invoke>` XML，完全不解析这些事件 → 这就是大BOSS症状2"调他自己的工具→空回复"的根因。
+
+### 两条根本性结论
+
+**结论 A：本项目无法支持 Claude Code 通用工具调用。**
+上游是封闭工具白名单，不接受外部工具。`write_file`/`Bash`/`Edit` 这类 Claude Code 核心工具根本传不进去。这条路堵死。
+
+**结论 B：上游原生工具可以反向暴露给 Claude Code。**
+如果把上游的 `parallel_web_search` 等原生工具事件解析转发成 Claude 的 `tool_use` block，Claude Code 就能直接用 Tabbit 的搜索/浏览能力。方向反了：不是"Claude Code 工具透传给 Tabbit"，而是"Tabbit 原生工具暴露给 Claude Code"。
+
+### 出路重评
+
+| 方案 | 可行性 | 说明 |
+|---|---|---|
+| ~~A. 启用 agent_mode~~ | ❌ 已证伪 | 真机就是 `agent_mode: false`，没有这条通道 |
+| **B. 放弃通用工具调用** | ✅ 诚实 | 文档明说不支持 Claude Code 工具，只做纯对话/长上下文 |
+| **D. 反向暴露上游原生工具（新）** | ✅ 可行 | 解析 `message_tool_calls` SSE → 转 Claude `tool_use`，让 Claude Code 用 Tabbit 的搜索/浏览 |
+
+方案 D 是新出路，但工作量大：要改 `ToolifyParser` 识别上游 SSE 工具事件，还要把上游工具白名单映射成 Claude 工具 schema 注入回去。而且只能用 Tabbit 那几个原生工具，Claude Code 的 write_file/Bash 还是没法用。
+
+**最务实的选择：方案 B（文档明确不支持）**，除非大BOSS特别想要 Tabbit 的搜索能力暴露给 Claude Code（方案 D）。
 
 ## 附：检测脚本坑
 

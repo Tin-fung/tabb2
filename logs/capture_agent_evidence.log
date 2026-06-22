@@ -1,0 +1,154 @@
+
+======================================================================
+REQUEST POST https://web.tabbit.ai/session/b1b562d1-c2ec-42af-8f37-01e4e7fa5808
+  content-type: text/plain;charset=UTF-8
+  body (parsed):
+  body (raw, parse failed 'list' object has no attribute 'get'): ["$undefined",{"page":1,"size":20}]
+
+======================================================================
+REQUEST POST https://web.tabbit.ai/api/v1/chat/completion
+  x-req-ctx: MS4xLjM5KDEwMTAxMDM5KQ==
+  unique-uuid: a26f01ba-3143-b39f-235e-83be165390b6
+  content-type: application/json
+  body (parsed):
+    selected_model: Default
+    task_name: chat
+    agent_mode: False
+    parallel_group_id: None
+    references: []
+    entity: {"key": "d41d8cd98f00b204e9800998ecf8427e", "extras": {"type": "tab", "url": ""}}
+    content_len: 11
+    content_has_invoke: False
+    content_has_trigger: False
+  full body:
+{
+  "chat_session_id": "b1b562d1-c2ec-42af-8f37-01e4e7fa5808",
+  "message_id": null,
+  "content": "帮我搜索今天的科技新闻",
+  "selected_model": "Default",
+  "parallel_group_id": null,
+  "task_name": "chat",
+  "agent_mode": false,
+  "metadatas": {
+    "html_content": "<p>帮我搜索今天的科技新闻</p>"
+  },
+  "references": [],
+  "entity": {
+    "key": "d41d8cd98f00b204e9800998ecf8427e",
+    "extras": {
+      "type": "tab",
+      "url": ""
+    }
+  }
+}
+  top-level keys: ['chat_session_id', 'message_id', 'content', 'selected_model', 'parallel_group_id', 'task_name', 'agent_mode', 'metadatas', 'references', 'entity']
+
+======================================================================
+REQUEST POST https://web.tabbit.ai/session/2588fc3a-acd3-442e-838e-1e8e8f6cfd3c
+  content-type: text/plain;charset=UTF-8
+  body (parsed):
+  body (raw, parse failed 'list' object has no attribute 'get'): ["$undefined",{"page":1,"size":20}]
+
+======================================================================
+REQUEST POST https://web.tabbit.ai/session/dd923b2d-e112-4993-baaa-bbeecf74fd24
+  content-type: text/plain;charset=UTF-8
+  body (parsed):
+  body (raw, parse failed 'list' object has no attribute 'get'): ["$undefined",{"page":1,"size":20}]
+
+======================================================================
+REQUEST POST https://web.tabbit.ai/session/75090119-eeaf-4c61-9a55-b8c04d668fa1
+  content-type: text/plain;charset=UTF-8
+  body (parsed):
+  body (raw, parse failed 'list' object has no attribute 'get'): ["$undefined",{"page":1,"size":20}]
+
+======================================================================
+REQUEST POST https://web.tabbit.ai/session/425b4250-1ff2-4153-aca1-58b8a7c15e3a
+  content-type: text/plain;charset=UTF-8
+  body (parsed):
+  body (raw, parse failed 'list' object has no attribute 'get'): ["$undefined",{"page":1,"size":20}]
+
+======================================================================
+REQUEST POST https://web.tabbit.ai/session/dd923b2d-e112-4993-baaa-bbeecf74fd24
+  content-type: text/plain;charset=UTF-8
+  body (parsed):
+  body (raw, parse failed 'list' object has no attribute 'get'): ["$undefined",{"page":1,"size":20}]
+
+======================================================================
+REQUEST POST https://web.tabbit.ai/session/8d257019-f6ae-4e20-9cfb-fa24828a159e
+  content-type: text/plain;charset=UTF-8
+  body (parsed):
+  body (raw, parse failed 'list' object has no attribute 'get'): ["$undefined",{"page":1,"size":20}]
+RESPONSE 200 text/event-stream
+  sse first lines:
+    event: ready
+    data: {"chat_session_id": "b1b562d1-c2ec-42af-8f37-01e4e7fa5808", "parent_id": "", "request_message_id": "bb0ee70a-0f9b-
+    
+    event: message_start
+    data: {"message_id": "914ce683-3023-4675-b65b-2b17bcc7499f", "parent_id": "bb0ee70a-0f9b-4574-a7ed-cf827c5cfd2f"}
+    
+    event: message_tool_call_delta
+    data: {"index": 0, "tool_call_id": "call_9e598137ce364b1995e13a1c98fc1d58", "type": "function", "tool_call_name": "paral
+    
+    event: message_tool_calls
+    data: {"tool_calls": [{"id": "call_9e598137ce364b1995e13a1c98fc1d58", "type": "function", "function": {"name": "parallel
+    
+    event: message_finish
+    data: {"message_id": "914ce683-3023-4675-b65b-2b17bcc7499f"}
+    
+    event: tool_start
+    data: {"tool_call_name": "parallel_web_search", "tool_call_id": "call_9e598137ce364b1995e13a1c98fc1d58", "tool_call_ids"
+    
+    event: tool_finish
+    data: {"tool_call_id": "call_9e598137ce364b1995e13a1c98fc1d58", "tool_call_name": "parallel_web_search", "message_id": "
+    ææºå¤§ççº¦æ¶¨17.5% è¹æå æ¯20.6%éåç¬¬ä¸. 6æ22æ¥,æ°ç åä¸»âRDè§æµâåæç§°,2026å¹´ç¬¬24å¨(6æ
+    ææºå¸åºå¤§çééä¸æ¶¨çº¦17.5%ï½¡åä¸ºnova 16 Ultraå
+    ·ä½æ¥ç,è¹æä»¥20.6%çå¸åºä»½é¢ä½å±
+    ç¬¬ä¸,åä¸ºä»¥19.8%ä½åç¬¬äºï½¡vivo(å«iQOO)ä»¥17.2%æåç¬¬ä¸,å
+    ¶ä¸­iQOOè´¡ç®6.1ä¸ªç¾åç¹ï½¡OPPO(å«ä¸å ï½¤çæ)ä»½é¢ä¸º16%,ä¸å åçæåå«å 3.6%å0.7%ï½¡æ®CNMOç§æ
+    ææºå¸åºå¤§çééä¸æ¶¨çº¦17.5%ï½¡. **1.** æ¶æ¯ç§° 3 å®¶ä¸»æµåçè¿­ä»£çº¿æ°æºä¸ 7 è±å¯¸å¤§å±,è³é«ä¸
+    å¤ 6.9 è±å¯¸å¤§å±,è¿ä¹æ¯æè°ææºéé¢çä¸»æµå°ºå¯¸ï½¡â². vivo S60è¿æ¬¡ææææµ·æ£è¿å
+    éäº 06:00 æçæ½®æµæ°æ­å­,OPPO Reno16è®©å¹³å¡ç¬é´è¿¸åæ»¡æ»¡çå½å! MIX Fold 5ä¸åå¹´ä¸å¸:é¦åç
+    ¨æ°æºåæ­£å¼éè¿å·¥ä¿¡é¨å
+    ¥ç½è®¤è¯,è¿æ¬¾äº§åé¢è®¡ä¸ºå°ç±³é¦æ¬¾éæå ææºMIX Fold 5,åæ¶ä¹æ¯å°ç±³ä»å¹´å®ä½æé«ç«¯çææºæ
+
+======================================================================
+REQUEST POST https://web.tabbit.ai/session/b1b562d1-c2ec-42af-8f37-01e4e7fa5808
+  content-type: text/plain;charset=UTF-8
+  body (parsed):
+  body (raw, parse failed 'list' object has no attribute 'get'): ["$undefined",{"page":1,"size":20}]
+
+======================================================================
+REQUEST POST https://web.tabbit.ai/session/75090119-eeaf-4c61-9a55-b8c04d668fa1
+  content-type: text/plain;charset=UTF-8
+  body (parsed):
+  body (raw, parse failed 'list' object has no attribute 'get'): ["$undefined",{"page":1,"size":20}]
+
+======================================================================
+REQUEST POST https://web.tabbit.ai/session/425b4250-1ff2-4153-aca1-58b8a7c15e3a
+  content-type: text/plain;charset=UTF-8
+  body (parsed):
+  body (raw, parse failed 'list' object has no attribute 'get'): ["$undefined",{"page":1,"size":20}]
+
+======================================================================
+REQUEST POST https://web.tabbit.ai/session/8d257019-f6ae-4e20-9cfb-fa24828a159e
+  content-type: text/plain;charset=UTF-8
+  body (parsed):
+  body (raw, parse failed 'list' object has no attribute 'get'): ["$undefined",{"page":1,"size":20}]
+
+======================================================================
+REQUEST POST https://web.tabbit.ai/session/2588fc3a-acd3-442e-838e-1e8e8f6cfd3c
+  content-type: text/plain;charset=UTF-8
+  body (parsed):
+  body (raw, parse failed 'list' object has no attribute 'get'): ["$undefined",{"page":1,"size":20}]
+
+======================================================================
+REQUEST POST https://web.tabbit.ai/session/dd923b2d-e112-4993-baaa-bbeecf74fd24
+  content-type: text/plain;charset=UTF-8
+  body (parsed):
+  body (raw, parse failed 'list' object has no attribute 'get'): ["$undefined",{"page":1,"size":20}]
+
+======================================================================
+REQUEST POST https://web.tabbit.ai/session/dd923b2d-e112-4993-baaa-bbeecf74fd24
+  content-type: text/plain;charset=UTF-8
+  body (parsed):
+  body (raw, parse failed 'list' object has no attribute 'get'): ["$undefined",{"page":1,"size":20}]

@@ -4,30 +4,39 @@
   mitmdump -s scripts/capture_agent.py
   # 然后在真机 Tabbit 客户端触发一个 agent 任务（如"搜索今天科技新闻"）
 
-重点抓 /api/v1/chat/completion 的 request body，对比 agent_mode / task_name /
-是否带工具定义字段（非 content 正文里的）。输出到 stdout + logs/capture_agent.log
+重点抓 /api/v1/chat/completion + /session/{id} 的 request body，对比
+agent_mode / task_name / 是否带工具定义字段（非 content 正文里的）。
+print 到 stdout（mitm 默认显示），同时落 logs/capture_agent.log。
 """
 import json
 import os
+import sys
 from mitmproxy import http
 
-LOG_DIR = "logs"
+LOG_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "capture_agent.log")
 
 
 def _log(msg: str) -> None:
-    print(msg)
-    with open(LOG_FILE, "a", encoding="utf-8") as f:
-        f.write(msg + "\n")
+    # stdout 强制 flush，确保 mitm 能实时显示
+    print(msg, flush=True)
+    try:
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except Exception as e:
+        print(f"[log write err {e}]", flush=True)
 
 
 def request(flow: http.HTTPFlow) -> None:
     url = flow.request.pretty_url
     if "tabbit" not in url:
         return
-    # 只关心聊天 completion 接口
-    if "/api/v1/chat/completion" not in url and "/chat/send" not in url:
+    # 真机用 /api/v1/chat/completion 或 /session/{id} 两个接口发消息
+    if "/api/v1/chat/completion" not in url and "/session/" not in url:
+        return
+    # 只看 POST（session GET 是页面加载）
+    if flow.request.method != "POST":
         return
     method = flow.request.method
     body_text = flow.request.get_text() or ""
