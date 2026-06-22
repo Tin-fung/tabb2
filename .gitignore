@@ -9,3 +9,5 @@ __pycache__/
 .venv/
 .probe-venv/
 .claude/
+data/
+config.json

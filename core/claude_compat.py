@@ -30,9 +30,14 @@ THINKING_END_TAG = "</thinking>"
 #   同样 492 拦死，边界一致 → 492 是网关全局限制，换接口绕不过去。
 # 真机还有输入框前端限制 20000 字符（20000/20000 UI 显示），proxy 绕过输入框
 #   直打接口，故必须在此截断补上真机本有的限制。
-# 设 18450 留 ~10% 余量吸收边界波动（实测 20421 vs 历史 20500，波动来自 uuid/时间戳等附加字段）。
+# 设 20000 贴近网关真实边界 20421，最大化留近期上下文在 content。
+# 2026-06 注意力衰减实测：references 通道「能检索」≠「注意力均等」——
+#   硬约束/事实/任务相关偏好在 references 里守得住，但「软偏好」（风格类）
+#   在 40k 历史时仅 25% 遵守率。把 content 阈值从 18450 提到 20000，
+#   多留 ~1550 字符近期上下文在 content，直接缓解软偏好衰减。
+# 余量 421 吸收 uuid/时间戳等附加字段波动（实测边界 20421 vs 历史 20500）。
 # Claude 端点 (map_claude_to_content) 和 OpenAI 端点 (_build_content) 共用此值。
-MAX_CONTENT_LEN = 18450
+MAX_CONTENT_LEN = 20000
 
 # ── 触发信号 ──
 
@@ -299,6 +304,11 @@ def build_content_with_refs(parts: list[str], max_len: int) -> tuple[str, list, 
     限制，模型能读到埋在 7万字符深处的暗号。据此把旧历史转移到 references，
     突破 2万字符天花板，释放长上下文模型（GLM-5.1/GPT-5.5）的真实能力。
 
+    关键指令保护（2026-06 注意力衰减实测新增）：
+      references 通道「能检索」≠「注意力均等」。硬约束/事实在 references 里
+      守得住，但「软偏好」（风格类指令）在 40k 历史时仅 25% 遵守率。故识别
+      含偏好/约束关键词的消息，强制留 content，不随旧历史沉入 references。
+
     返回 (content, references, task_name)。
     """
     # 区分 System 段（含 tools，必须留 content 供模型直接看 schema）和消息段
@@ -319,8 +329,22 @@ def build_content_with_refs(parts: list[str], max_len: int) -> tuple[str, list, 
         kept_msgs.insert(0, p)
         kept_len += len(p) + 4
 
-    # 没有旧历史可分流（消息太少但单条超长，或 tools 本身撑爆）→ 退回硬压缩兜底
+    # 关键指令保护：从「本该进 references 的旧历史」里捞出含偏好/约束关键词的消息，
+    # 强制提升到 content。这类指令若沉入 references，软偏好会被模型忽略（实测 25%→应接近100%）。
     old_msgs = msg_parts[: len(msg_parts) - len(kept_msgs)]
+    pinned = [p for p in old_msgs if _is_critical_instruction(p)]
+    if pinned:
+        # 按预算尽力收纳 pinned（超预算则从前到后取，优先最早的约束——它管全域）
+        for p in pinned:
+            if kept_len + len(p) + 4 > budget:
+                break
+            kept_msgs.insert(0, p)  # 约束放最近消息之前
+            kept_len += len(p) + 4
+        # 重算 old_msgs：已 pin 的移出
+        pinned_set = set(pinned)
+        old_msgs = [p for p in old_msgs if p not in pinned_set]
+
+    # 没有旧历史可分流（消息太少但单条超长，或 tools 本身撑爆）→ 退回硬压缩兜底
     if not old_msgs:
         text = compress_content(parts, max_len)
         return text, [], "chat"
@@ -345,6 +369,23 @@ def build_content_with_refs(parts: list[str], max_len: int) -> tuple[str, list, 
     }]
 
     return content, references, "chat"
+
+
+# 关键指令关键词：命中则视为「必须留 content」的约束/偏好类消息。
+# 注意：用短语而非单字（如「必须」「永远」），避免误命中普通业务文本。
+_CRITICAL_INSTRUCTION_PATTERNS = [
+    "必须", "务必", "永远", "始终", "请记住", "记住我", "我的偏好", "我偏好",
+    "约束", "限制", "不要用", "只能用", "只能", "禁止", "避免",
+    "风格", "格式要求", "要求：", "规则：",
+    "always", "never", "must", "prefer", "require", "whenever",
+]
+
+
+def _is_critical_instruction(part: str) -> bool:
+    """判断一条消息是否含关键指令（偏好/约束），需强制留 content。"""
+    # 只看消息正文（去掉 [User]:/[Assistant]: 前缀），小写化匹配
+    text = part.lower()
+    return any(kw in text for kw in _CRITICAL_INSTRUCTION_PATTERNS)
 
 
 def compress_content(parts: list[str], max_len: int) -> str:
