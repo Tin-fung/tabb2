@@ -70,14 +70,14 @@ _fallback_clients = TTLCache(ttl=3600)  # 1 小时过期
 # 按型号族映射（opus→Opus-4.8, sonnet→Sonnet-4.6, haiku→Haiku-4.5），
 # 让用户选 opus 真用 premium Opus（消额度），选 haiku 用免费 Haiku。
 # Tabbit 侧无 3.x/4.0-4.4，统一归到当前最新同族型号。
-# 顺序敏感：更具体的前缀放前面（opus-4-1 优先于 opus）。
+# 保留 3-5/3-7 老前缀作老客户端兼容层——Claude Code 旧版本或锁定旧模型名的
+# 配置仍在发这些名，删了会静默降级到 Default（用户不知情）。
+# 不含 claude-opus-3/claude-sonnet-3：Anthropic 从未发过此命名，死代码已清。
 CLAUDE_MODEL_MAP = {
     # Opus 族 → Claude-Opus-4.8 (premium_only)
     "claude-opus-4": "Claude-Opus-4.8",
-    "claude-opus-3": "Claude-Opus-4.8",
     # Sonnet 族 → Claude-Sonnet-4.6 (premium_only)
     "claude-sonnet-4": "Claude-Sonnet-4.6",
-    "claude-sonnet-3": "Claude-Sonnet-4.6",
     "claude-3-7-sonnet": "Claude-Sonnet-4.6",
     "claude-3-5-sonnet": "Claude-Sonnet-4.6",
     # Haiku 族 → Claude-Haiku-4.5 (free_metered)
