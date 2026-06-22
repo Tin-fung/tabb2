@@ -29,8 +29,9 @@ MODELS_API_PATH = "/proxy/v1/model_config/models?a=0"
 class ModelRegistry:
     """模型注册表：动态拉取 + 缓存 + fallback"""
 
-    def __init__(self, base_url: str = "https://web.tabbit.ai"):
+    def __init__(self, base_url: str = "https://web.tabbit.ai", verify_ssl: bool = False):
         self.base_url = base_url
+        self.verify_ssl = verify_ssl
         self._cache: Optional[dict] = None  # {alias: selected_model}
         self._models_meta: Optional[list] = None  # 完整模型元信息
         self._expires_at: float = 0
@@ -89,7 +90,7 @@ class ModelRegistry:
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=10, read=20, write=10, pool=10),
-                verify=False,
+                verify=self.verify_ssl,
             ) as client:
                 resp = await client.get(f"{self.base_url}{MODELS_API_PATH}")
                 if resp.status_code != 200:
@@ -158,9 +159,9 @@ class ModelRegistry:
 _registry: Optional[ModelRegistry] = None
 
 
-def init_registry(base_url: str = "https://web.tabbit.ai") -> ModelRegistry:
+def init_registry(base_url: str = "https://web.tabbit.ai", verify_ssl: bool = False) -> ModelRegistry:
     global _registry
-    _registry = ModelRegistry(base_url)
+    _registry = ModelRegistry(base_url, verify_ssl)
     return _registry
 
 

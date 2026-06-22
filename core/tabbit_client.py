@@ -71,7 +71,7 @@ MODEL_MAP = {
 
 
 class TabbitClient:
-    def __init__(self, token_str: str, base_url: str | None = None, client_id: str | None = None, browser_version: str | None = None, sparkle_version: int | None = None, default_browser: bool = True):
+    def __init__(self, token_str: str, base_url: str | None = None, client_id: str | None = None, browser_version: str | None = None, sparkle_version: int | None = None, default_browser: bool = True, verify_ssl: bool = False):
         parts = token_str.split("|")
         self.jwt_token = parts[0]
         self.next_auth = parts[1] if len(parts) > 1 else None
@@ -95,7 +95,7 @@ class TabbitClient:
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(connect=15, read=120, write=15, pool=15),
             follow_redirects=True,
-            verify=False,
+            verify=verify_ssl,
         )
 
     def _extract_user_id(self, token: str) -> str:

@@ -48,6 +48,7 @@ class TokenManager:
                 self.config.get("tabbit", "browser_version"),
                 self.config.get("tabbit", "sparkle_version"),
                 self.config.get("tabbit", "default_browser", default=True),
+                verify_ssl=self.config.get("tabbit", "verify_ssl", default=False),
             )
         return self._clients[tid]
 

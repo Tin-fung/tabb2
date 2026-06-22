@@ -1,63 +1,53 @@
 import time
-import json
 import hmac
 import hashlib
-import base64
+import logging
 
 from fastapi import Request, HTTPException
+from jose import jwt, JWTError
 
-from core.config import ConfigManager, hash_password
+from core.config import ConfigManager, hash_password, verify_password_hash
+
+logger = logging.getLogger("tabbit2openai")
 
 TOKEN_EXPIRY = 86400  # 24 小时
 
 
-def _b64url_encode(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
-
-
-def _b64url_decode(s: str) -> bytes:
-    s += "=" * (4 - len(s) % 4)
-    return base64.urlsafe_b64decode(s)
-
-
 def create_jwt(config: ConfigManager) -> str:
+    """创建 JWT token（使用标准 jose 库）"""
     secret = config.get("admin", "jwt_secret")
-    header = _b64url_encode(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
-    payload = _b64url_encode(
-        json.dumps({"role": "admin", "exp": int(time.time()) + TOKEN_EXPIRY}).encode()
-    )
-    signature = _b64url_encode(
-        hmac.new(secret.encode(), f"{header}.{payload}".encode(), hashlib.sha256).digest()
-    )
-    return f"{header}.{payload}.{signature}"
+    payload = {
+        "role": "admin",
+        "exp": int(time.time()) + TOKEN_EXPIRY,
+    }
+    return jwt.encode(payload, secret, algorithm="HS256")
 
 
 def verify_jwt(token: str, config: ConfigManager) -> dict:
+    """验证 JWT token（使用标准 jose 库）"""
     try:
-        parts = token.split(".")
-        if len(parts) != 3:
-            raise ValueError("invalid token format")
-        header_b64, payload_b64, sig_b64 = parts
         secret = config.get("admin", "jwt_secret")
-        expected_sig = _b64url_encode(
-            hmac.new(
-                secret.encode(), f"{header_b64}.{payload_b64}".encode(), hashlib.sha256
-            ).digest()
-        )
-        if not hmac.compare_digest(sig_b64, expected_sig):
-            raise ValueError("invalid signature")
-        payload = json.loads(_b64url_decode(payload_b64))
-        if payload.get("exp", 0) < time.time():
-            raise ValueError("token expired")
+        payload = jwt.decode(token, secret, algorithms=["HS256"])
         return payload
-    except Exception as e:
+    except JWTError as e:
+        logger.warning("JWT verification failed: %s", e)
         raise HTTPException(status_code=401, detail=str(e))
 
 
 def verify_password(password: str, config: ConfigManager) -> bool:
+    """验证密码，支持 bcrypt 新格式和 SHA-256 旧格式（迁移兼容）"""
     stored_hash = config.get("admin", "password_hash")
     salt = config.get("admin", "salt")
-    computed, _ = hash_password(password, salt)
+
+    if not stored_hash:
+        return False
+
+    # 新格式：bcrypt 哈希（salt 为空）
+    if not salt:
+        return verify_password_hash(password, stored_hash)
+
+    # 旧格式：SHA-256 哈希（salt 非空）- 向后兼容
+    computed = hashlib.sha256((password + salt).encode()).hexdigest()
     return hmac.compare_digest(computed, stored_hash)
 
 

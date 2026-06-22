@@ -7,7 +7,9 @@ import json
 import time
 import uuid
 import math
+import hmac
 import logging
+from typing import Optional
 
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
@@ -33,7 +35,35 @@ router = APIRouter()
 _tm: TokenManager | None = None
 _cfg: ConfigManager | None = None
 _logs: LogStore | None = None
-_fallback_clients: dict[str, TabbitClient] = {}
+
+
+class TTLCache:
+    """带 TTL 的缓存，防止内存泄漏"""
+
+    def __init__(self, ttl: int = 3600):
+        self._cache: dict[str, tuple[TabbitClient, float]] = {}
+        self._ttl = ttl
+
+    def get(self, key: str) -> Optional[TabbitClient]:
+        if key in self._cache:
+            value, timestamp = self._cache[key]
+            if time.time() - timestamp < self._ttl:
+                return value
+            del self._cache[key]
+        return None
+
+    def set(self, key: str, value: TabbitClient):
+        self._cache[key] = (value, time.time())
+
+    def cleanup(self):
+        """清理过期缓存"""
+        now = time.time()
+        expired = [k for k, (_, ts) in self._cache.items() if now - ts >= self._ttl]
+        for k in expired:
+            del self._cache[k]
+
+
+_fallback_clients = TTLCache(ttl=3600)  # 1 小时过期
 
 # Claude 模型名 → Tabbit 模型名映射
 CLAUDE_MODEL_MAP = {
@@ -86,7 +116,7 @@ async def _get_client_and_token(
     request: Request,
 ) -> tuple[TabbitClient, str, str]:
     """获取客户端实例，返回 (client, token_name, token_id)"""
-    # 验证客户端 API key
+    # 验证客户端 API key（使用 hmac.compare_digest 防止时序攻击）
     api_key = _cfg.get("proxy", "api_key") if _cfg else ""
     auth_header = request.headers.get("x-api-key") or request.headers.get(
         "authorization", ""
@@ -94,7 +124,7 @@ async def _get_client_and_token(
     bearer = auth_header.replace("Bearer ", "") if auth_header.startswith("Bearer ") else auth_header
 
     if _tm and _tm.has_tokens:
-        if api_key and bearer != api_key:
+        if api_key and not hmac.compare_digest(bearer, api_key):
             raise HTTPException(status_code=401, detail="invalid api key")
         token_info, client = await _tm.get_next()
         if token_info is None:
@@ -107,8 +137,10 @@ async def _get_client_and_token(
     token = bearer
     if not token:
         raise HTTPException(status_code=401, detail="missing token")
-    if token not in _fallback_clients:
-        _fallback_clients[token] = TabbitClient(
+
+    client = _fallback_clients.get(token)
+    if client is None:
+        client = TabbitClient(
             token,
             _cfg.get("tabbit", "base_url") if _cfg else None,
             _cfg.get("tabbit", "client_id") if _cfg else None,
@@ -116,7 +148,13 @@ async def _get_client_and_token(
             _cfg.get("tabbit", "sparkle_version") if _cfg else None,
             _cfg.get("tabbit", "default_browser", default=True) if _cfg else True,
         )
-    return _fallback_clients[token], "bearer", ""
+        _fallback_clients.set(token, client)
+
+    # 定期清理过期缓存（1% 概率触发）
+    if time.time() % 100 < 1:
+        _fallback_clients.cleanup()
+
+    return client, "bearer", ""
 
 
 def _estimate_input_tokens(body: dict) -> int:

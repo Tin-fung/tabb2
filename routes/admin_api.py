@@ -41,6 +41,7 @@ class SettingsUpdateRequest(BaseModel):
     browser_version: Optional[str] = None
     sparkle_version: Optional[int] = None
     default_browser: Optional[bool] = None
+    verify_ssl: Optional[bool] = None
     api_key: Optional[str] = None
     max_entries: Optional[int] = None
     claude_default_model: Optional[str] = None
@@ -107,7 +108,8 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             info = {**t}
             info["status"] = _tm.get_token_status(t["id"])
             v = info.get("value", "")
-            info["value_preview"] = (v[:10] + "...") if len(v) > 10 else v
+            # 安全脱敏：只显示最后 4 位（类似信用卡显示方式）
+            info["value_preview"] = "***" + v[-4:] if len(v) > 4 else "***"
             del info["value"]
             result.append(info)
         return {"tokens": result}
@@ -194,7 +196,8 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             (_cfg.get("tabbit", "base_url") or "https://web.tabbit.ai")
             + "/proxy/v0/oauth/third-party-login"
         )
-        async with _httpx.AsyncClient(verify=False, timeout=15) as hc:
+        verify_ssl = _cfg.get("tabbit", "verify_ssl", default=False)
+        async with _httpx.AsyncClient(verify=verify_ssl, timeout=15) as hc:
             resp = await hc.post(
                 tabbit_url,
                 json={"id_token": req.id_token, "select_by": "btn", "type": 1},
@@ -277,6 +280,8 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             _cfg.set_val("tabbit", "sparkle_version", req.sparkle_version)
         if req.default_browser is not None:
             _cfg.set_val("tabbit", "default_browser", req.default_browser)
+        if req.verify_ssl is not None:
+            _cfg.set_val("tabbit", "verify_ssl", req.verify_ssl)
         if req.api_key is not None:
             _cfg.set_val("proxy", "api_key", req.api_key)
         if req.claude_default_model is not None:
@@ -322,9 +327,9 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
     async def update_password(req: PasswordUpdateRequest):
         if not verify_password(req.old_password, _cfg):
             raise HTTPException(status_code=401, detail="wrong old password")
-        pw_hash, salt = hash_password(req.new_password)
+        pw_hash = hash_password(req.new_password)
         _cfg.set_val("admin", "password_hash", pw_hash)
-        _cfg.set_val("admin", "salt", salt)
+        _cfg.set_val("admin", "salt", "")  # bcrypt 自带 salt，清空旧字段
         return {"ok": True}
 
     # ── Logs ──
@@ -355,7 +360,8 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
         appcast_url = f"{base_url}/api/v0/upgrade/appcast.xml"
 
         try:
-            async with _httpx.AsyncClient(timeout=10, verify=False) as hc:
+            verify_ssl = _cfg.get("tabbit", "verify_ssl", default=False)
+            async with _httpx.AsyncClient(timeout=10, verify=verify_ssl) as hc:
                 resp = await hc.get(appcast_url, headers={
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
                     "Accept": "application/rss+xml,application/xml,*/*",
@@ -515,7 +521,8 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
         try:
             import re as _re
             appcast_url = f"{base_url}/api/v0/upgrade/appcast.xml"
-            async with _httpx.AsyncClient(timeout=8, verify=False) as hc:
+            verify_ssl = _cfg.get("tabbit", "verify_ssl", default=False)
+            async with _httpx.AsyncClient(timeout=8, verify=verify_ssl) as hc:
                 vr = await hc.get(appcast_url, headers={
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
                     "Accept": "application/rss+xml,application/xml,*/*",
@@ -579,7 +586,8 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             # 3a. 模型清单接口
             server_time_offset = 0.0
             try:
-                async with _httpx.AsyncClient(timeout=10, verify=False) as hc:
+                verify_ssl = _cfg.get("tabbit", "verify_ssl", default=False)
+                async with _httpx.AsyncClient(timeout=10, verify=verify_ssl) as hc:
                     resp = await hc.get(f"{base_url}/api/v0/chat/models", headers=headers, cookies=cookies)
                     # 从 Date 头同步服务器时间，供 3b 生成 uuid 用
                     dh = resp.headers.get("date")
@@ -612,7 +620,8 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
 
             # 3b. 建会话测试（用同步后的服务器时间生成 uuid）
             try:
-                async with _httpx.AsyncClient(timeout=15, verify=False, follow_redirects=True) as hc:
+                verify_ssl = _cfg.get("tabbit", "verify_ssl", default=False)
+                async with _httpx.AsyncClient(timeout=15, verify=verify_ssl, follow_redirects=True) as hc:
                     import urllib.parse as _up, json as _json
                     router_state = ["",{"children":["chat",{"children":[["id","new","d"],{"children":["__PAGE__",{},None,"refetch"]},None,None]},None,None]},None,None]
                     h2 = {**headers,
