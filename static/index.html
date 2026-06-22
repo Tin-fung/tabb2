@@ -40,6 +40,42 @@ tailwind.config = {
   .nav-item { transition: background .15s, color .15s; }
   .nav-item:hover { background: hsl(240 3.7% 15.9%); }
   .nav-item.active { background: hsl(240 3.7% 15.9%); color: hsl(0 0% 98%); }
+
+  /* 移动端侧边栏 */
+  .sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 40;
+    backdrop-filter: blur(4px);
+  }
+  .sidebar-overlay.active { display: block; }
+
+  @media (max-width: 768px) {
+    .sidebar-mobile {
+      transform: translateX(-100%);
+      transition: transform 0.3s ease-in-out;
+      z-index: 50;
+    }
+    .sidebar-mobile.active {
+      transform: translateX(0);
+    }
+    .main-content {
+      margin-left: 0 !important;
+      padding: 1rem !important;
+    }
+    /* 移动端表格容器 */
+    .table-container {
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    /* 移动端按钮触摸优化 */
+    .touch-target {
+      min-height: 44px;
+      min-width: 44px;
+    }
+  }
 </style>
 </head>
 <body class="bg-zinc-950 text-zinc-100 min-h-screen">
@@ -164,30 +200,47 @@ const navItems = [
 function layout() {
   return `
   <div class="flex min-h-screen">
+    <!-- 移动端遮罩层 -->
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
+
     <!-- Sidebar -->
-    <aside class="w-56 border-r border-zinc-800 bg-zinc-950 flex flex-col fixed h-screen">
-      <div class="p-5 border-b border-zinc-800">
-        <h1 class="text-base font-semibold tracking-tight">Tabbit2API</h1>
-        <p class="text-xs text-zinc-500 mt-0.5">管理面板</p>
+    <aside class="w-64 md:w-56 border-r border-zinc-800 bg-zinc-950 flex flex-col fixed h-screen sidebar-mobile md:transform-none" id="sidebar">
+      <div class="p-5 border-b border-zinc-800 flex items-center justify-between">
+        <div>
+          <h1 class="text-base font-semibold tracking-tight">Tabbit2API</h1>
+          <p class="text-xs text-zinc-500 mt-0.5">管理面板</p>
+        </div>
+        <!-- 移动端关闭按钮 -->
+        <button onclick="toggleSidebar()" class="md:hidden p-2 rounded-lg hover:bg-zinc-800 transition-colors">
+          <svg class="w-5 h-5 text-zinc-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+        </button>
       </div>
-      <nav class="flex-1 p-3 space-y-1" id="navList">
+      <nav class="flex-1 p-3 space-y-1 overflow-y-auto" id="navList">
         ${navItems.map(n => `
-          <button data-page="${n.id}" class="nav-item w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm ${currentPage === n.id ? 'active' : 'text-zinc-400'}">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">${n.icon}</svg>
+          <button data-page="${n.id}" class="nav-item w-full flex items-center gap-3 px-4 py-3 md:py-2 rounded-lg text-sm touch-target ${currentPage === n.id ? 'active' : 'text-zinc-400'}">
+            <svg class="w-5 h-5 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">${n.icon}</svg>
             ${n.label}
           </button>
         `).join('')}
       </nav>
       <div class="p-3 border-t border-zinc-800">
-        <button onclick="logout()" class="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm text-zinc-400 hover:bg-zinc-900 hover:text-zinc-300 transition-colors">
-          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
+        <button onclick="logout()" class="w-full flex items-center gap-3 px-4 py-3 md:py-2 rounded-lg text-sm text-zinc-400 hover:bg-zinc-900 hover:text-zinc-300 transition-colors touch-target">
+          <svg class="w-5 h-5 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/></svg>
           退出登录
         </button>
       </div>
     </aside>
 
     <!-- Main content -->
-    <main class="flex-1 ml-56 p-8" id="mainContent">
+    <main class="flex-1 ml-0 md:ml-56 p-4 md:p-8 main-content" id="mainContent">
+      <!-- 移动端顶部栏 -->
+      <div class="md:hidden flex items-center justify-between mb-4">
+        <button onclick="toggleSidebar()" class="p-2 rounded-lg hover:bg-zinc-800 transition-colors touch-target">
+          <svg class="w-6 h-6 text-zinc-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <h1 class="text-sm font-semibold text-zinc-300">Tabbit2API</h1>
+        <div class="w-10"></div>
+      </div>
       <div class="max-w-6xl mx-auto fade-in" id="pageContent"></div>
     </main>
   </div>`;
@@ -195,8 +248,31 @@ function layout() {
 
 function bindNav() {
   document.querySelectorAll('#navList button').forEach(btn => {
-    btn.onclick = () => navigate(btn.dataset.page);
+    btn.onclick = () => {
+      navigate(btn.dataset.page);
+      // 移动端点击导航后关闭侧边栏
+      if (window.innerWidth < 768) {
+        toggleSidebar(false);
+      }
+    };
   });
+}
+
+function toggleSidebar(show) {
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebarOverlay');
+  if (show === undefined) {
+    show = !sidebar.classList.contains('active');
+  }
+  if (show) {
+    sidebar.classList.add('active');
+    overlay.classList.add('active');
+    document.body.style.overflow = 'hidden';
+  } else {
+    sidebar.classList.remove('active');
+    overlay.classList.remove('active');
+    document.body.style.overflow = '';
+  }
 }
 
 function logout() {
@@ -241,25 +317,25 @@ async function renderDashboard(el) {
       ${miniCard('活跃 Token', s.active_tokens)}
     </div>
     <div class="rounded-xl border border-zinc-800 bg-zinc-900">
-      <div class="px-5 py-4 border-b border-zinc-800">
+      <div class="px-4 md:px-5 py-4 border-b border-zinc-800">
         <h3 class="text-sm font-medium">最近请求</h3>
       </div>
-      <div class="overflow-x-auto">
+      <div class="overflow-x-auto table-container">
         <table class="w-full text-sm">
           <thead><tr class="text-zinc-400 text-left border-b border-zinc-800">
-            <th class="px-5 py-3 font-medium">时间</th>
-            <th class="px-5 py-3 font-medium">模型</th>
-            <th class="px-5 py-3 font-medium">Token</th>
-            <th class="px-5 py-3 font-medium">状态</th>
-            <th class="px-5 py-3 font-medium">耗时</th>
+            <th class="px-3 md:px-5 py-3 font-medium whitespace-nowrap">时间</th>
+            <th class="px-3 md:px-5 py-3 font-medium">模型</th>
+            <th class="px-3 md:px-5 py-3 font-medium">Token</th>
+            <th class="px-3 md:px-5 py-3 font-medium">状态</th>
+            <th class="px-3 md:px-5 py-3 font-medium">耗时</th>
           </tr></thead>
           <tbody>
             ${s.recent_logs.map(l => `<tr class="border-b border-zinc-800/50 hover:bg-zinc-800/30">
-              <td class="px-5 py-3 text-zinc-400">${fmtTime(l.timestamp)}</td>
-              <td class="px-5 py-3">${l.model}</td>
-              <td class="px-5 py-3 text-zinc-400">${l.token_name}</td>
-              <td class="px-5 py-3">${statusBadge(l.status)}</td>
-              <td class="px-5 py-3 text-zinc-400">${l.duration}s</td>
+              <td class="px-3 md:px-5 py-3 text-zinc-400 whitespace-nowrap">${fmtTime(l.timestamp)}</td>
+              <td class="px-3 md:px-5 py-3">${l.model}</td>
+              <td class="px-3 md:px-5 py-3 text-zinc-400">${l.token_name}</td>
+              <td class="px-3 md:px-5 py-3">${statusBadge(l.status)}</td>
+              <td class="px-3 md:px-5 py-3 text-zinc-400">${l.duration}s</td>
             </tr>`).join('') || '<tr><td colspan="5" class="px-5 py-8 text-center text-zinc-500">暂无请求记录</td></tr>'}
           </tbody>
         </table>
@@ -269,9 +345,9 @@ async function renderDashboard(el) {
 
 function statCard(label, value, colorClass) {
   return `
-  <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
-    <p class="text-sm text-zinc-400 mb-1">${label}</p>
-    <p class="text-2xl font-semibold ${colorClass}">${value}</p>
+  <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-4 md:p-5">
+    <p class="text-xs md:text-sm text-zinc-400 mb-1">${label}</p>
+    <p class="text-xl md:text-2xl font-semibold ${colorClass}">${value}</p>
   </div>`;
 }
 
@@ -288,52 +364,52 @@ function miniCard(label, value) {
 async function renderTokens(el) {
   const data = await api('/tokens');
   el.innerHTML = `
-    <div class="flex items-center justify-between mb-6">
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
       <h2 class="text-2xl font-semibold">Tokens</h2>
-      <div class="flex items-center gap-2">
-        <button onclick="showGoogleLogin()" class="inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-4 py-2 text-sm hover:bg-zinc-800 transition-colors">
+      <div class="flex flex-wrap items-center gap-2">
+        <button onclick="showGoogleLogin()" class="inline-flex items-center gap-2 rounded-lg border border-zinc-700 px-4 py-2.5 text-sm hover:bg-zinc-800 transition-colors touch-target">
           <svg class="w-4 h-4" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
-          Google 登录获取
+          Google 登录
         </button>
-        <button onclick="showAddToken()" class="inline-flex items-center gap-2 rounded-lg bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-200 transition-colors">
+        <button onclick="showAddToken()" class="inline-flex items-center gap-2 rounded-lg bg-zinc-100 px-4 py-2.5 text-sm font-medium text-zinc-900 hover:bg-zinc-200 transition-colors touch-target">
           <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-          手动添加
+          添加 Token
         </button>
       </div>
     </div>
     <div id="tokenModal"></div>
     <div class="rounded-xl border border-zinc-800 bg-zinc-900">
-      <div class="overflow-x-auto">
+      <div class="overflow-x-auto table-container">
         <table class="w-full text-sm">
           <thead><tr class="text-zinc-400 text-left border-b border-zinc-800">
-            <th class="px-5 py-3 font-medium">状态</th>
-            <th class="px-5 py-3 font-medium">名称</th>
-            <th class="px-5 py-3 font-medium">Token</th>
-            <th class="px-5 py-3 font-medium">请求数</th>
-            <th class="px-5 py-3 font-medium">错误</th>
-            <th class="px-5 py-3 font-medium">最后使用</th>
-            <th class="px-5 py-3 font-medium text-right">操作</th>
+            <th class="px-3 md:px-5 py-3 font-medium">状态</th>
+            <th class="px-3 md:px-5 py-3 font-medium">名称</th>
+            <th class="px-3 md:px-5 py-3 font-medium hidden sm:table-cell">Token</th>
+            <th class="px-3 md:px-5 py-3 font-medium">请求数</th>
+            <th class="px-3 md:px-5 py-3 font-medium hidden md:table-cell">错误</th>
+            <th class="px-3 md:px-5 py-3 font-medium hidden lg:table-cell">最后使用</th>
+            <th class="px-3 md:px-5 py-3 font-medium text-right">操作</th>
           </tr></thead>
           <tbody>
             ${data.tokens.map(t => `<tr class="border-b border-zinc-800/50 hover:bg-zinc-800/30" data-id="${t.id}">
-              <td class="px-5 py-3"><span class="status-dot status-${t.status}"></span></td>
-              <td class="px-5 py-3 font-medium">${esc(t.name)}</td>
-              <td class="px-5 py-3 text-zinc-400 font-mono text-xs">${esc(t.value_preview)}</td>
-              <td class="px-5 py-3">${t.total_requests}</td>
-              <td class="px-5 py-3 ${t.error_count > 0 ? 'text-red-400' : ''}">${t.error_count}</td>
-              <td class="px-5 py-3 text-zinc-400">${t.last_used_at ? fmtTime(t.last_used_at) : '-'}</td>
-              <td class="px-5 py-3 text-right space-x-1">
-                <button onclick="testToken('${t.id}')" class="inline-flex items-center rounded-md bg-zinc-800 px-2.5 py-1.5 text-xs hover:bg-zinc-700 transition-colors" title="测试">
-                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
+              <td class="px-3 md:px-5 py-3"><span class="status-dot status-${t.status}"></span></td>
+              <td class="px-3 md:px-5 py-3 font-medium">${esc(t.name)}</td>
+              <td class="px-3 md:px-5 py-3 text-zinc-400 font-mono text-xs hidden sm:table-cell">${esc(t.value_preview)}</td>
+              <td class="px-3 md:px-5 py-3">${t.total_requests}</td>
+              <td class="px-3 md:px-5 py-3 ${t.error_count > 0 ? 'text-red-400' : ''} hidden md:table-cell">${t.error_count}</td>
+              <td class="px-3 md:px-5 py-3 text-zinc-400 hidden lg:table-cell">${t.last_used_at ? fmtTime(t.last_used_at) : '-'}</td>
+              <td class="px-3 md:px-5 py-3 text-right space-x-1">
+                <button onclick="testToken('${t.id}')" class="inline-flex items-center rounded-md bg-zinc-800 px-2.5 py-2 text-xs hover:bg-zinc-700 transition-colors touch-target" title="测试">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
                 </button>
-                <button onclick="toggleToken('${t.id}', ${!t.enabled})" class="inline-flex items-center rounded-md bg-zinc-800 px-2.5 py-1.5 text-xs hover:bg-zinc-700 transition-colors" title="${t.enabled ? '禁用' : '启用'}">
+                <button onclick="toggleToken('${t.id}', ${!t.enabled})" class="inline-flex items-center rounded-md bg-zinc-800 px-2.5 py-2 text-xs hover:bg-zinc-700 transition-colors touch-target" title="${t.enabled ? '禁用' : '启用'}">
                   ${t.enabled
-                    ? '<svg class="w-3.5 h-3.5 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>'
-                    : '<svg class="w-3.5 h-3.5 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.878 9.878L3 3m6.878 6.878L21 21"/></svg>'
+                    ? '<svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>'
+                    : '<svg class="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.878 9.878L3 3m6.878 6.878L21 21"/></svg>'
                   }
                 </button>
-                <button onclick="deleteToken('${t.id}','${esc(t.name)}')" class="inline-flex items-center rounded-md bg-zinc-800 px-2.5 py-1.5 text-xs hover:bg-red-900/50 text-red-400 transition-colors" title="删除">
-                  <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                <button onclick="deleteToken('${t.id}','${esc(t.name)}')" class="inline-flex items-center rounded-md bg-zinc-800 px-2.5 py-2 text-xs hover:bg-red-900/50 text-red-400 transition-colors touch-target" title="删除">
+                  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                 </button>
               </td>
             </tr>`).join('') || '<tr><td colspan="7" class="px-5 py-8 text-center text-zinc-500">尚未添加 Token</td></tr>'}
@@ -345,22 +421,22 @@ async function renderTokens(el) {
 
 function showAddToken() {
   document.getElementById('tokenModal').innerHTML = `
-  <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onclick="if(event.target===this)closeModal()">
-    <div class="w-full max-w-md rounded-xl border border-zinc-800 bg-zinc-900 p-6 shadow-2xl fade-in">
+  <div class="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onclick="if(event.target===this)closeModal()">
+    <div class="w-full max-w-md rounded-xl border border-zinc-800 bg-zinc-900 p-5 md:p-6 shadow-2xl fade-in">
       <h3 class="text-lg font-semibold mb-4">添加 Token</h3>
       <form id="addTokenForm" class="space-y-4">
         <div>
           <label class="block text-sm text-zinc-400 mb-1.5">名称</label>
-          <input id="tkName" type="text" placeholder="例如: Account 1" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500">
+          <input id="tkName" type="text" placeholder="例如: Account 1" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-500 touch-target">
         </div>
         <div>
           <label class="block text-sm text-zinc-400 mb-1.5">Token 值</label>
-          <textarea id="tkValue" rows="3" placeholder="JWT|NEXT_AUTH|DEVICE_ID" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 resize-none"></textarea>
+          <textarea id="tkValue" rows="3" placeholder="JWT|NEXT_AUTH|DEVICE_ID" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-3 text-sm text-zinc-100 placeholder-zinc-500 resize-none"></textarea>
           <p class="text-xs text-zinc-500 mt-1">格式: JWT 或 JWT|NEXT_AUTH 或 JWT|NEXT_AUTH|DEVICE_ID</p>
         </div>
         <div class="flex justify-end gap-3 pt-2">
-          <button type="button" onclick="closeModal()" class="rounded-lg border border-zinc-700 px-4 py-2 text-sm hover:bg-zinc-800 transition-colors">取消</button>
-          <button type="submit" class="rounded-lg bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-200 transition-colors">添加</button>
+          <button type="button" onclick="closeModal()" class="rounded-lg border border-zinc-700 px-5 py-2.5 text-sm hover:bg-zinc-800 transition-colors touch-target">取消</button>
+          <button type="submit" class="rounded-lg bg-zinc-100 px-5 py-2.5 text-sm font-medium text-zinc-900 hover:bg-zinc-200 transition-colors touch-target">添加</button>
         </div>
       </form>
     </div>
@@ -537,16 +613,16 @@ async function renderSettings(el) {
     <h2 class="text-2xl font-semibold mb-6">Settings</h2>
     <div class="space-y-6">
       <!-- Server -->
-      <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-6">
+      <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-4 md:p-6">
         <h3 class="text-sm font-medium text-zinc-300 mb-4">服务器配置</h3>
         <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label class="block text-sm text-zinc-400 mb-1.5">Host</label>
-            <input id="sHost" type="text" value="${esc(s.server.host)}" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100">
+            <input id="sHost" type="text" value="${esc(s.server.host)}" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-3 text-sm text-zinc-100 touch-target">
           </div>
           <div>
             <label class="block text-sm text-zinc-400 mb-1.5">Port</label>
-            <input id="sPort" type="number" value="${s.server.port}" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100">
+            <input id="sPort" type="number" value="${s.server.port}" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-3 text-sm text-zinc-100 touch-target">
           </div>
         </div>
       </div>
@@ -662,26 +738,26 @@ ANTHROPIC_API_KEY=${s.proxy.api_key || 'any-key-here'}</code>
         <h3 class="text-sm font-medium text-zinc-300 mb-4">日志配置</h3>
         <div class="max-w-xs">
           <label class="block text-sm text-zinc-400 mb-1.5">最大日志条数</label>
-          <input id="sMaxEntries" type="number" value="${s.logging.max_entries}" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100">
+          <input id="sMaxEntries" type="number" value="${s.logging.max_entries}" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-3 text-sm text-zinc-100 touch-target">
         </div>
       </div>
       <div class="flex justify-end">
-        <button onclick="saveSettings()" class="rounded-lg bg-zinc-100 px-6 py-2.5 text-sm font-medium text-zinc-900 hover:bg-zinc-200 transition-colors">保存设置</button>
+        <button onclick="saveSettings()" class="w-full sm:w-auto rounded-lg bg-zinc-100 px-6 py-3 text-sm font-medium text-zinc-900 hover:bg-zinc-200 transition-colors touch-target">保存设置</button>
       </div>
 
       <!-- Password -->
-      <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-6">
+      <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-4 md:p-6">
         <h3 class="text-sm font-medium text-zinc-300 mb-4">修改密码</h3>
         <div class="space-y-4 max-w-sm">
           <div>
             <label class="block text-sm text-zinc-400 mb-1.5">当前密码</label>
-            <input id="pwOld" type="password" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100">
+            <input id="pwOld" type="password" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-3 text-sm text-zinc-100 touch-target">
           </div>
           <div>
             <label class="block text-sm text-zinc-400 mb-1.5">新密码</label>
-            <input id="pwNew" type="password" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100">
+            <input id="pwNew" type="password" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-3 text-sm text-zinc-100 touch-target">
           </div>
-          <button onclick="changePassword()" class="rounded-lg bg-zinc-800 border border-zinc-700 px-4 py-2 text-sm hover:bg-zinc-700 transition-colors">修改密码</button>
+          <button onclick="changePassword()" class="w-full sm:w-auto rounded-lg bg-zinc-800 border border-zinc-700 px-5 py-2.5 text-sm hover:bg-zinc-700 transition-colors touch-target">修改密码</button>
         </div>
       </div>
     </div>`;
@@ -781,53 +857,53 @@ async function renderLogs(el) {
   const totalPages = Math.max(1, Math.ceil(data.total / data.page_size));
 
   el.innerHTML = `
-    <div class="flex items-center justify-between mb-6">
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
       <h2 class="text-2xl font-semibold">Logs</h2>
-      <div class="flex items-center gap-3">
-        <select id="logFilterSel" onchange="filterLogs(this.value)" class="rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100">
+      <div class="flex flex-wrap items-center gap-3">
+        <select id="logFilterSel" onchange="filterLogs(this.value)" class="rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2.5 text-sm text-zinc-100 touch-target">
           <option value="" ${!logFilter ? 'selected' : ''}>全部</option>
           <option value="success" ${logFilter === 'success' ? 'selected' : ''}>成功</option>
           <option value="error" ${logFilter === 'error' ? 'selected' : ''}>失败</option>
         </select>
-        <label class="flex items-center gap-2 text-sm text-zinc-400">
+        <label class="flex items-center gap-2 text-sm text-zinc-400 touch-target">
           <input type="checkbox" id="autoRefreshCb" onchange="toggleAutoRefresh(this.checked)" ${autoRefreshTimer ? 'checked' : ''}
-            class="rounded border-zinc-600 bg-zinc-800 text-zinc-100">
+            class="rounded border-zinc-600 bg-zinc-800 text-zinc-100 w-5 h-5">
           自动刷新
         </label>
       </div>
     </div>
     <div class="rounded-xl border border-zinc-800 bg-zinc-900">
-      <div class="overflow-x-auto">
+      <div class="overflow-x-auto table-container">
         <table class="w-full text-sm">
           <thead><tr class="text-zinc-400 text-left border-b border-zinc-800">
-            <th class="px-5 py-3 font-medium">时间</th>
-            <th class="px-5 py-3 font-medium">模型</th>
-            <th class="px-5 py-3 font-medium">Token</th>
-            <th class="px-5 py-3 font-medium">流式</th>
-            <th class="px-5 py-3 font-medium">状态</th>
-            <th class="px-5 py-3 font-medium">耗时</th>
-            <th class="px-5 py-3 font-medium">错误</th>
+            <th class="px-3 md:px-5 py-3 font-medium whitespace-nowrap">时间</th>
+            <th class="px-3 md:px-5 py-3 font-medium">模型</th>
+            <th class="px-3 md:px-5 py-3 font-medium hidden sm:table-cell">Token</th>
+            <th class="px-3 md:px-5 py-3 font-medium hidden md:table-cell">流式</th>
+            <th class="px-3 md:px-5 py-3 font-medium">状态</th>
+            <th class="px-3 md:px-5 py-3 font-medium hidden lg:table-cell">耗时</th>
+            <th class="px-3 md:px-5 py-3 font-medium">错误</th>
           </tr></thead>
           <tbody>
             ${data.items.map(l => `<tr class="border-b border-zinc-800/50 hover:bg-zinc-800/30">
-              <td class="px-5 py-3 text-zinc-400 whitespace-nowrap">${fmtTime(l.timestamp)}</td>
-              <td class="px-5 py-3">${esc(l.model)}</td>
-              <td class="px-5 py-3 text-zinc-400">${esc(l.token_name)}</td>
-              <td class="px-5 py-3">${l.stream ? '<span class="text-blue-400">SSE</span>' : 'JSON'}</td>
-              <td class="px-5 py-3">${statusBadge(l.status)}</td>
-              <td class="px-5 py-3 text-zinc-400">${l.duration}s</td>
-              <td class="px-5 py-3 text-red-400 text-xs max-w-xs truncate">${esc(l.error)}</td>
+              <td class="px-3 md:px-5 py-3 text-zinc-400 whitespace-nowrap">${fmtTime(l.timestamp)}</td>
+              <td class="px-3 md:px-5 py-3">${esc(l.model)}</td>
+              <td class="px-3 md:px-5 py-3 text-zinc-400 hidden sm:table-cell">${esc(l.token_name)}</td>
+              <td class="px-3 md:px-5 py-3 hidden md:table-cell">${l.stream ? '<span class="text-blue-400">SSE</span>' : 'JSON'}</td>
+              <td class="px-3 md:px-5 py-3">${statusBadge(l.status)}</td>
+              <td class="px-3 md:px-5 py-3 text-zinc-400 hidden lg:table-cell">${l.duration}s</td>
+              <td class="px-3 md:px-5 py-3 text-red-400 text-xs max-w-[120px] md:max-w-xs truncate">${esc(l.error)}</td>
             </tr>`).join('') || '<tr><td colspan="7" class="px-5 py-8 text-center text-zinc-500">暂无日志</td></tr>'}
           </tbody>
         </table>
       </div>
       ${totalPages > 1 ? `
-      <div class="flex items-center justify-between px-5 py-3 border-t border-zinc-800">
+      <div class="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 md:px-5 py-3 border-t border-zinc-800">
         <span class="text-sm text-zinc-400">共 ${data.total} 条</span>
         <div class="flex items-center gap-2">
-          <button onclick="gotoLogPage(${logPage - 1})" ${logPage <= 1 ? 'disabled' : ''} class="rounded-md bg-zinc-800 px-3 py-1.5 text-xs hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">上一页</button>
-          <span class="text-sm text-zinc-400">${logPage} / ${totalPages}</span>
-          <button onclick="gotoLogPage(${logPage + 1})" ${logPage >= totalPages ? 'disabled' : ''} class="rounded-md bg-zinc-800 px-3 py-1.5 text-xs hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors">下一页</button>
+          <button onclick="gotoLogPage(${logPage - 1})" ${logPage <= 1 ? 'disabled' : ''} class="rounded-md bg-zinc-800 px-4 py-2 text-sm hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors touch-target">上一页</button>
+          <span class="text-sm text-zinc-400 px-2">${logPage} / ${totalPages}</span>
+          <button onclick="gotoLogPage(${logPage + 1})" ${logPage >= totalPages ? 'disabled' : ''} class="rounded-md bg-zinc-800 px-4 py-2 text-sm hover:bg-zinc-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors touch-target">下一页</button>
         </div>
       </div>` : ''}
     </div>`;
