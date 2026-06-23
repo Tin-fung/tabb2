@@ -596,19 +596,22 @@ async function deleteToken(id, name) {
 
 async function renderSettings(el) {
   const s = await api('/settings');
-  // 并行拉取动态模型清单（用于 Claude 默认模型下拉 + 模型清单展示）
+  // 拉取动态模型清单（用于 Claude 默认模型下拉 + 模型清单展示）。
+  // 不再 fallback 硬编码旧 id——过时清单会误导用户。失败就如实显示未就绪。
   let models = [];
   let modelsReady = false;
+  let modelsError = null;
   try {
     const m = await api('/models');
     models = m.models || [];
     modelsReady = !!m.ready;
-  } catch (e) { /* 拉取失败用静态兜底，不阻塞 */ }
-  // 下拉选项：动态模型优先，兜底静态列表
-  const selectOpts = (models.length ? models : [
-    {id:'best'},{id:'gpt-5.2-chat'},{id:'gpt-5.1-chat'},{id:'gemini-3-pro'},
-    {id:'claude-sonnet-4.5'},{id:'glm-5'},{id:'deepseek-v3.2'}
-  ]).map(m => '<option value="' + esc(m.id) + '"' + (s.claude?.default_model === m.id ? ' selected' : '') + '>' + esc(m.tabbit_display_name || m.id) + '</option>').join('');
+  } catch (e) {
+    // /models 返回 503 时 m 为空，记录错误供 UI 提示
+    modelsError = e.message || '上游拉取失败';
+  }
+  // 下拉选项：仅用动态拉取的模型；拉取失败时给空占位，不塞旧 id
+  const selectOpts = (models.length ? models : [{id:'', tabbit_display_name:'（模型清单未就绪，请先刷新）'}])
+    .map(m => '<option value="' + esc(m.id) + '"' + (s.claude?.default_model === m.id ? ' selected' : '') + '>' + esc(m.tabbit_display_name || m.id) + '</option>').join('');
   el.innerHTML = `
     <h2 class="text-2xl font-semibold mb-6">Settings</h2>
     <div class="space-y-6">
@@ -671,10 +674,18 @@ async function renderSettings(el) {
         <div class="px-5 py-4 border-b border-zinc-800 flex items-center justify-between">
           <div class="flex items-center gap-2">
             <h3 class="text-sm font-medium text-zinc-300">模型清单</h3>
-            <span class="text-xs text-zinc-500">动态拉取 · ${modelsReady ? '已缓存' : '兜底静态表'}</span>
+            <span class="text-xs ${modelsReady ? 'text-emerald-400' : 'text-amber-400'}">${modelsReady ? '动态拉取 · 已缓存' : '动态拉取 · 未就绪'}</span>
           </div>
           <button onclick="refreshModelsInSettings()" class="rounded-lg border border-zinc-700 px-3 py-1 text-xs hover:bg-zinc-800 transition-colors">刷新</button>
         </div>
+        ${(!modelsReady || modelsError) ? `
+        <div class="px-5 py-3 bg-amber-950/40 border-b border-amber-900/50 flex items-center justify-between gap-3">
+          <div class="flex items-center gap-2 text-sm text-amber-300">
+            <span>⚠️</span>
+            <span>模型清单未就绪${modelsError ? '：' + esc(modelsError) : ''}。第三方平台此时拉取会拿到 503，不会缓存到过时模型 id。点右侧"刷新"重新拉取。</span>
+          </div>
+          <button onclick="refreshModelsInSettings()" class="shrink-0 rounded-lg bg-amber-700 hover:bg-amber-600 px-3 py-1.5 text-xs text-white transition-colors">立即刷新</button>
+        </div>` : ''}
         <div class="overflow-x-auto">
           <table class="w-full text-sm">
             <thead><tr class="text-zinc-400 text-left border-b border-zinc-800">
@@ -710,7 +721,7 @@ async function renderSettings(el) {
           <select id="sClaudeModel" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100">
             ${selectOpts}
           </select>
-          <p class="text-xs text-zinc-500 mt-1">${models.length ? `动态拉取 ${models.length} 个模型` : '动态拉取失败，显示静态兜底'}</p>
+          <p class="text-xs ${models.length ? 'text-zinc-500' : 'text-amber-400'} mt-1">${models.length ? `动态拉取 ${models.length} 个模型` : '⚠️ 模型清单未就绪，请先点上方"刷新"'}</p>
         </div>
         <div class="rounded-lg bg-zinc-800/50 border border-zinc-700/50 p-4">
           <p class="text-xs text-zinc-400 mb-2 font-medium">Claude Code 连接配置</p>
@@ -789,11 +800,14 @@ async function saveSettings() {
 
 // 刷新动态模型清单后重渲染 settings 页
 async function refreshModelsInSettings() {
+  const btn = event?.target;
+  if (btn) { btn.disabled = true; const orig = btn.textContent; btn.textContent = '刷新中…'; }
   try {
     const r = await api('/models/refresh', { method: 'POST' });
     await renderSettings(document.getElementById('pageContent'));
-    alert(r.ok ? `刷新成功，共 ${r.count} 个模型` : '刷新失败');
+    if (!r.ok) alert('刷新失败：上游拉取未成功，请稍后重试');
   } catch (e) { alert('刷新失败: ' + e.message); }
+  finally { if (btn) { btn.disabled = false; btn.textContent = '刷新'; } }
 }
 
 // 查询上游最新版本（读 appcast.xml），对比当前配置
