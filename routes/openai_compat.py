@@ -2,6 +2,7 @@ import json
 import time
 import uuid
 import hmac
+import asyncio
 import logging
 from typing import Optional
 
@@ -310,17 +311,26 @@ async def chat_completions(
 
 @router.get("/v1/models")
 async def list_models():
-    # 优先返回动态拉取的模型清单
+    """返回动态拉取的模型清单。
+
+    registry 不可用时返回 503，绝不 fallback 静态 MODEL_MAP——
+    后者是过时清单（含 best/glm-5 等旧 id），会让第三方平台缓存到
+    错误模型列表。正确做法是让上游感知失败，由管理 UI 刷新。
+    """
     registry = get_registry()
-    if registry and registry.ready:
-        models = registry.list_models()
-        if models:
-            return {"object": "list", "data": models}
-    # 兜底：静态 MODEL_MAP
-    return {
-        "object": "list",
-        "data": [
-            {"id": k, "object": "model", "owned_by": "tabbit"}
-            for k in MODEL_MAP.keys()
-        ],
-    }
+    if not registry or not registry.ready:
+        # 后台触发一次刷新（不阻塞响应），下次请求可能就绪
+        if registry:
+            asyncio.create_task(registry.refresh_with_retry(retries=1))
+        raise HTTPException(
+            status_code=503,
+            detail="model registry not ready (upstream fetch failed). "
+                   "Refresh in admin UI: Settings → Models → Refresh.",
+        )
+    models = registry.list_models()
+    if not models:
+        raise HTTPException(
+            status_code=503,
+            detail="model registry empty. Refresh in admin UI.",
+        )
+    return {"object": "list", "data": models}

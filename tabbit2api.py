@@ -55,8 +55,10 @@ async def lifespan(app: FastAPI):
         logger.warning("⚠️  请在管理面板 Settings 中设置 API Key")
         logger.warning("=" * 60)
 
-    # 启动时拉取动态模型清单（失败也不阻塞启动，用 MODEL_MAP 兜底）
-    await model_registry.refresh()
+    # 启动时拉取动态模型清单（带重试，失败也不阻塞启动）。
+    # 注意：不再用静态 MODEL_MAP 兜底 /v1/models——旧清单会误导第三方平台。
+    # 拉取失败时返回明确错误，让用户在管理 UI 手动刷新。
+    await model_registry.refresh_with_retry()
     yield
     await token_manager.close_all()
 

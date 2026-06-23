@@ -11,6 +11,7 @@
 - 上游 selectedModel 字段接受 display_name（如 "GLM-5.1"），验证可成功
 - 接口 B 的模型只有 display_name 没有 name，故 selectedModel 用 display_name
 """
+import asyncio
 import time
 import logging
 from typing import Optional
@@ -21,6 +22,13 @@ logger = logging.getLogger("tabbit2openai")
 
 # 缓存 TTL（秒）：模型清单不常变，缓存 1 小时
 MODEL_CACHE_TTL = 3600
+# 旧缓存宽限窗（秒）：拉取失败但有过期缓存时，顺延这么久仍视为可用，
+# 避免每请求都重打上游。期间后台可重试刷新。
+STALE_CACHE_GRACE = 300
+
+
+async def _async_sleep(seconds: float) -> None:
+    await asyncio.sleep(seconds)
 
 # 上游模型清单接口（最新清单，含新模型）
 MODELS_API_PATH = "/proxy/v1/model_config/models?a=0"
@@ -84,9 +92,41 @@ class ModelRegistry:
         return alias_map, models_meta
 
     async def refresh(self, force: bool = False) -> bool:
-        """拉取最新模型清单，成功返回 True"""
+        """拉取最新模型清单，成功返回 True。
+
+        失败时保留旧缓存（若有）——旧清单 > 过时静态 MODEL_MAP。
+        启动路径带重试（_startup=True），缓解上游瞬时不可达导致启动即兜底。
+        """
         if not force and self._cache and time.time() < self._expires_at:
             return True
+        ok = await self._fetch_once()
+        if ok:
+            return True
+        # 失败但有旧缓存：保留旧数据，TTL 顺延短窗，避免每请求都重打上游
+        if self._cache:
+            logger.warning("model registry refresh failed, keeping stale cache (%d models)",
+                           len(self._models_meta or []))
+            self._expires_at = time.time() + STALE_CACHE_GRACE
+            return True
+        return False
+
+    async def refresh_with_retry(self, retries: int = 2, delay: float = 1.5) -> bool:
+        """带重试的刷新，用于启动。retries=2 共打 3 次。"""
+        for attempt in range(retries + 1):
+            if await self._fetch_once():
+                return True
+            if attempt < retries:
+                logger.warning("model registry refresh attempt %d/%d failed, retrying...",
+                               attempt + 1, retries + 1)
+                await _async_sleep(delay)
+        # 全部失败：若有旧缓存兜住，否则返回 False
+        if self._cache:
+            self._expires_at = time.time() + STALE_CACHE_GRACE
+            return True
+        return False
+
+    async def _fetch_once(self) -> bool:
+        """单次拉取，成功更新缓存并返回 True。"""
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=10, read=20, write=10, pool=10),
