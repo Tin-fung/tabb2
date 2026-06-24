@@ -4,7 +4,7 @@ import uuid
 import hmac
 import asyncio
 import logging
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Header
 from fastapi.responses import StreamingResponse
@@ -15,7 +15,15 @@ from core.token_manager import TokenManager
 from core.log_store import LogStore, LogEntry
 from core.config import ConfigManager
 from core.model_registry import get_registry
-from core.claude_compat import MAX_CONTENT_LEN, compress_content
+from core.claude_compat import (
+    MAX_CONTENT_LEN,
+    ToolifyParser,
+    alias_tools,
+    build_tool_name_map,
+    build_tool_prompt,
+    compress_content,
+    random_trigger_signal,
+)
 
 logger = logging.getLogger("tabbit2openai")
 
@@ -65,8 +73,11 @@ def init(token_manager: TokenManager, config: ConfigManager, log_store: LogStore
 
 class ChatMessage(BaseModel):
     # content 兼容字符串和多模态数组（Cherry Studio 等客户端可能发数组）
+    model_config = {"extra": "ignore"}
     role: str
     content: str | list | None = None
+    tool_calls: list[dict] | None = None
+    tool_call_id: str | None = None
 
     def text_content(self) -> str:
         """提取纯文本内容，兼容字符串和数组格式"""
@@ -93,9 +104,95 @@ class ChatCompletionRequest(BaseModel):
     model: str = "best"
     messages: list[ChatMessage]
     stream: bool = False
+    tools: list[dict] | None = None
+    tool_choice: Any = None
 
 
-def _build_content(messages: list[ChatMessage]) -> tuple[str, list, str]:
+def _normalize_openai_tools(tools: list[dict] | None) -> list[dict]:
+    """OpenAI tools → 内部 Claude-style tools."""
+    normalized = []
+    for tool in tools or []:
+        if tool.get("type") == "function":
+            fn = tool.get("function") or {}
+            name = fn.get("name")
+            if not name:
+                continue
+            normalized.append(
+                {
+                    "name": name,
+                    "description": fn.get("description", ""),
+                    "input_schema": fn.get("parameters")
+                    or {"type": "object", "properties": {}},
+                }
+            )
+        elif tool.get("name"):
+            normalized.append(
+                {
+                    "name": tool.get("name"),
+                    "description": tool.get("description", ""),
+                    "input_schema": tool.get("input_schema")
+                    or tool.get("parameters")
+                    or {"type": "object", "properties": {}},
+                }
+            )
+    return normalized
+
+
+def _tool_result_text(message: ChatMessage) -> str:
+    content = message.text_content()
+    status = "error" if content.lower().startswith(("error", "failed")) else "success"
+    tool_id = message.tool_call_id or ""
+    result = (
+        f'<tool_result id="{tool_id}" status="{status}">\n'
+        f"{content}\n"
+        "</tool_result>"
+    )
+    if status == "success":
+        result += (
+            "\nThe tool call above completed successfully. If its output contains "
+            "the information requested by the user, answer the user now. Do not "
+            "repeat the same write/create/read operation."
+        )
+    return result
+
+
+def _assistant_tool_calls_text(
+    message: ChatMessage,
+    trigger_signal: str | None,
+    name_map: dict[str, str],
+) -> str:
+    parts = []
+    if message.text_content():
+        parts.append(message.text_content())
+    reverse = {v: k for k, v in name_map.items()}
+    for call in message.tool_calls or []:
+        fn = call.get("function") or {}
+        name = fn.get("name", "")
+        invoke_name = reverse.get(name, name)
+        raw_args = fn.get("arguments") or "{}"
+        try:
+            args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+        except Exception:
+            args = {}
+        param_lines = []
+        for key, value in (args or {}).items():
+            str_val = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+            param_lines.append(f'<parameter name="{key}">{str_val}</parameter>')
+        trigger = f"{trigger_signal}\n" if trigger_signal else ""
+        parts.append(
+            f'{trigger}<invoke name="{invoke_name}">\n'
+            + "\n".join(param_lines)
+            + "\n</invoke>"
+        )
+    return "\n".join(parts)
+
+
+def _build_content(
+    messages: list[ChatMessage],
+    tools: list[dict] | None = None,
+    trigger_signal: str | None = None,
+    name_map: dict[str, str] | None = None,
+) -> tuple[str, list, str]:
     """构建发送内容，返回 (content, references, task_name)。
 
     超长时自动分流：System段+最近消息留 content，旧历史入 references，
@@ -103,7 +200,8 @@ def _build_content(messages: list[ChatMessage]) -> tuple[str, list, str]:
     """
     from core.claude_compat import build_content_with_refs
     system_prompt = _cfg.get("proxy", "system_prompt") if _cfg else ""
-    if len(messages) == 1 and not system_prompt:
+    name_map = name_map or {}
+    if len(messages) == 1 and not system_prompt and not tools:
         # 单条短消息快速路径，但仍要过截断闸（单条也可能超长，如贴大段代码）
         text = messages[0].text_content()
         if len(text) > MAX_CONTENT_LEN:
@@ -113,11 +211,21 @@ def _build_content(messages: list[ChatMessage]) -> tuple[str, list, str]:
     parts = []
     if system_prompt:
         parts.append(f"[System]: {system_prompt}")
+    if tools and trigger_signal:
+        parts.append(f"[System]: {build_tool_prompt(alias_tools(tools), trigger_signal)}")
     for m in messages:
-        label = {"user": "User", "assistant": "Assistant", "system": "System"}.get(
-            m.role, m.role.capitalize()
-        )
-        parts.append(f"[{label}]: {m.text_content()}")
+        if m.role == "tool":
+            label = "User"
+            content = _tool_result_text(m)
+        elif m.role == "assistant" and m.tool_calls:
+            label = "Assistant"
+            content = _assistant_tool_calls_text(m, trigger_signal, name_map)
+        else:
+            label = {"user": "User", "assistant": "Assistant", "system": "System"}.get(
+                m.role, m.role.capitalize()
+            )
+            content = m.text_content()
+        parts.append(f"[{label}]: {content}")
     text = "\n\n".join(parts) + "\n\n[Assistant]:"
     # 超长分流：content 过网关，旧历史入 references 绕过限制
     if len(text) > MAX_CONTENT_LEN:
@@ -168,34 +276,301 @@ async def _get_client_and_token(
     return client, "bearer", ""
 
 
-async def _stream_handler(client, session_id, content, tabbit_model, req_model, completion_id, token_name, token_id, references=None, task_name="chat"):
+class OpenAISSEWriter:
+    def __init__(self, completion_id: str, model: str):
+        self.completion_id = completion_id
+        self.model = model
+        self.has_tool_call = False
+        self.finished = False
+        self.tool_index = 0
+        self.emitted_tool_signatures: set[str] = set()
+        self.pending_text = ""
+        self.suppressed_text = False
+
+    def init_event(self) -> str:
+        return self._sse(
+            {
+                "id": self.completion_id,
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": ""},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        )
+
+    def handle_events(self, events: list[dict]) -> list[str]:
+        output = []
+        for event in events:
+            etype = event["type"]
+            if etype == "text":
+                output.extend(self._queue_text(event["content"]))
+            elif etype == "tool_call":
+                self.has_tool_call = True
+                self.pending_text = ""
+                output.extend(self._emit_tool_call(event["call"]))
+            elif etype == "end":
+                output.extend(self.finish())
+        return output
+
+    def _queue_text(self, text: str) -> list[str]:
+        from core.claude_compat import _clean_tool_protocol_residue
+
+        original = text
+        text = _clean_tool_protocol_residue(text)
+        if not text:
+            if original and original.strip():
+                self.suppressed_text = True
+            return []
+        if self.has_tool_call:
+            return []
+        self.pending_text += text
+        return []
+
+    def _flush_pending_text(self) -> list[str]:
+        if not self.pending_text or self.has_tool_call:
+            self.pending_text = ""
+            return []
+        text = self.pending_text
+        self.pending_text = ""
+        return [self._content_delta(text)]
+
+    def _emit_tool_call(self, call: dict) -> list[str]:
+        signature = json.dumps(
+            {"name": call.get("name"), "arguments": call.get("arguments", {})},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if signature in self.emitted_tool_signatures:
+            logger.info("skip duplicate openai tool_call: %s", call.get("name"))
+            return []
+        self.emitted_tool_signatures.add(signature)
+
+        lines = []
+        if self.tool_index == 0:
+            lines.append(self._content_delta("我来处理。\n"))
+        idx = self.tool_index
+        self.tool_index += 1
+        call_id = f"call_{uuid.uuid4().hex}"
+        args = json.dumps(call.get("arguments", {}), ensure_ascii=False)
+        chunk = {
+            "id": self.completion_id,
+            "object": "chat.completion.chunk",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": idx,
+                                "id": call_id,
+                                "type": "function",
+                                "function": {
+                                    "name": call.get("name", ""),
+                                    "arguments": args,
+                                },
+                            }
+                        ]
+                    },
+                    "finish_reason": None,
+                }
+            ],
+        }
+        lines.append(self._sse(chunk))
+        return lines
+
+    def finish(self) -> list[str]:
+        if self.finished:
+            return []
+        self.finished = True
+        lines = []
+        if not self.has_tool_call and not self.pending_text and self.suppressed_text:
+            self.pending_text = "这轮没有产生有效工具调用，请重试一次。"
+        lines.extend(self._flush_pending_text())
+        finish_reason = "tool_calls" if self.has_tool_call else "stop"
+        lines.append(
+            self._sse(
+                {
+                    "id": self.completion_id,
+                    "object": "chat.completion.chunk",
+                    "choices": [
+                        {"index": 0, "delta": {}, "finish_reason": finish_reason}
+                    ],
+                }
+            )
+        )
+        return lines
+
+    def _content_delta(self, text: str) -> str:
+        return self._sse(
+            {
+                "id": self.completion_id,
+                "object": "chat.completion.chunk",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": text},
+                        "finish_reason": None,
+                    }
+                ],
+            }
+        )
+
+    @staticmethod
+    def _sse(data: dict) -> str:
+        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _required_by_name(tools: list[dict]) -> dict[str, set[str]]:
+    return {
+        t.get("name", ""): set((t.get("input_schema") or {}).get("required") or [])
+        for t in tools
+        if t.get("name")
+    }
+
+
+_ARG_ALIASES = {
+    "filePath": ("file_path", "path", "filepath", "file"),
+    "file_path": ("filePath", "path", "filepath", "file"),
+    "path": ("filePath", "file_path", "filepath", "file"),
+    "command": ("cmd", "shell_command", "bash_command"),
+    "cmd": ("command", "shell_command", "bash_command"),
+}
+
+
+def _properties_by_name(tools: list[dict]) -> dict[str, set[str]]:
+    return {
+        t.get("name", ""): set(((t.get("input_schema") or {}).get("properties") or {}).keys())
+        for t in tools
+        if t.get("name")
+    }
+
+
+def _repair_arguments(name: str, args: dict, properties_by_name: dict[str, set[str]]) -> dict:
+    """把模型常吐的参数别名修成客户端 schema 的真实参数名。"""
+    if not isinstance(args, dict):
+        return {}
+    props = properties_by_name.get(name, set())
+    if not props:
+        return args
+
+    repaired = dict(args)
+    for prop in props:
+        if prop in repaired and repaired.get(prop) not in (None, ""):
+            continue
+        for alias in _ARG_ALIASES.get(prop, ()):
+            if alias in repaired and repaired.get(alias) not in (None, ""):
+                repaired[prop] = repaired[alias]
+                logger.info("repair openai tool arg: %s %s<- %s", name, prop, alias)
+                break
+        if prop == "description" and prop not in repaired and repaired.get("command"):
+            repaired[prop] = f"Run shell command: {repaired['command']}"
+            logger.info("repair openai tool arg: %s description<- command", name)
+    return repaired
+
+
+def _filter_tool_events(
+    events: list[dict],
+    required_by_name: dict[str, set[str]],
+    properties_by_name: dict[str, set[str]],
+) -> list[dict]:
+    filtered = []
+    for ev in events:
+        if ev.get("type") != "tool_call":
+            filtered.append(ev)
+            continue
+        call = ev.get("call") or {}
+        name = call.get("name", "")
+        args = _repair_arguments(name, call.get("arguments") or {}, properties_by_name)
+        call["arguments"] = args
+        ev["call"] = call
+        missing = [
+            key for key in required_by_name.get(name, set())
+            if key not in args or args.get(key) in (None, "")
+        ]
+        if missing:
+            logger.info(
+                "skip invalid openai tool_call: %s missing=%s args=%s",
+                name,
+                ",".join(missing),
+                list(args.keys()),
+            )
+            continue
+        filtered.append(ev)
+    return filtered
+
+
+async def _stream_handler(
+    client,
+    session_id,
+    content,
+    tabbit_model,
+    req_model,
+    completion_id,
+    token_name,
+    token_id,
+    references=None,
+    task_name="chat",
+    trigger_signal: str | None = None,
+    name_map: dict[str, str] | None = None,
+    tools: list[dict] | None = None,
+):
     start = time.time()
     error_msg = ""
+    writer = OpenAISSEWriter(completion_id, req_model)
+    required = _required_by_name(tools or [])
+    properties = _properties_by_name(tools or [])
+    parser = ToolifyParser(trigger_signal, False, name_map=name_map or {})
     try:
-        yield (
-            f"data: {json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {'role': 'assistant', 'content': ''}, 'finish_reason': None}]})}\n\n"
-        )
+        yield writer.init_event()
 
         async for event in client.send_message(session_id, content, tabbit_model, references=references, task_name=task_name):
             et, ed = event["event"], event["data"]
             if et == "message_chunk" and "content" in ed:
-                chunk = {
-                    "id": completion_id,
-                    "object": "chat.completion.chunk",
-                    "choices": [
-                        {
-                            "index": 0,
-                            "delta": {"content": ed["content"]},
-                            "finish_reason": None,
-                        }
-                    ],
-                }
-                yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-            elif et in ("message_finish", "finish"):
-                yield (
-                    f"data: {json.dumps({'id': completion_id, 'object': 'chat.completion.chunk', 'choices': [{'index': 0, 'delta': {}, 'finish_reason': 'stop'}]})}\n\n"
-                )
+                text = ed["content"]
+                if trigger_signal:
+                    for char in text:
+                        parser.feed_char(char)
+                        events = _filter_tool_events(parser.consume_events(), required, properties)
+                        for line in writer.handle_events(events):
+                            yield line
+                else:
+                    for line in writer.handle_events([{"type": "text", "content": text}]):
+                        yield line
+            elif et == "message_tool_calls":
+                parser.flush_text()
+                events = _filter_tool_events(parser.consume_events(), required, properties)
+                for line in writer.handle_events(events):
+                    yield line
+                for tc in ed.get("tool_calls", []):
+                    fn = tc.get("function", {})
+                    alias_name = fn.get("name", "")
+                    if name_map and alias_name not in name_map:
+                        continue
+                    orig_name = (name_map or {}).get(alias_name, alias_name)
+                    try:
+                        args = json.loads(fn.get("arguments", "{}")) if isinstance(fn.get("arguments"), str) else fn.get("arguments", {})
+                    except Exception:
+                        args = {}
+                    events = _filter_tool_events(
+                        [{"type": "tool_call", "call": {"name": orig_name, "arguments": args}}],
+                        required,
+                        properties,
+                    )
+                    for line in writer.handle_events(events):
+                        yield line
+                    if events:
+                        logger.info("native tool_calls → openai tool_calls: %s", orig_name)
+            elif et == "finish":
+                break
 
+        parser.finish()
+        events = _filter_tool_events(parser.consume_events(), required, properties)
+        for line in writer.handle_events(events):
+            yield line
         yield "data: [DONE]\n\n"
         if token_id:
             _tm.report_success(token_id)
@@ -229,7 +604,15 @@ async def chat_completions(
         tabbit_model = registry.resolve(req.model)
     else:
         tabbit_model = MODEL_MAP.get(req.model.lower(), "Default")
-    content, references, task_name = _build_content(req.messages)
+    tools = _normalize_openai_tools(req.tools)
+    trigger_signal = random_trigger_signal() if tools else None
+    name_map = build_tool_name_map(tools) if tools else {}
+    content, references, task_name = _build_content(
+        req.messages,
+        tools=tools,
+        trigger_signal=trigger_signal,
+        name_map=name_map,
+    )
 
     try:
         session_id = await client.create_chat_session()
@@ -262,6 +645,9 @@ async def chat_completions(
                 token_id,
                 references=references,
                 task_name=task_name,
+                trigger_signal=trigger_signal,
+                name_map=name_map,
+                tools=tools,
             ),
             media_type="text/event-stream",
         )
@@ -269,11 +655,86 @@ async def chat_completions(
     # 非流式
     start = time.time()
     full_text = ""
+    tool_calls = []
     error_msg = ""
+    parser = ToolifyParser(trigger_signal, False, name_map=name_map)
+    required = _required_by_name(tools)
+    properties = _properties_by_name(tools)
     try:
         async for event in client.send_message(session_id, content, tabbit_model, references=references, task_name=task_name):
-            if event["event"] == "message_chunk":
-                full_text += event["data"].get("content", "")
+            et, ed = event["event"], event["data"]
+            if et == "message_chunk":
+                text = ed.get("content", "")
+                if trigger_signal:
+                    for char in text:
+                        parser.feed_char(char)
+                        for ev in _filter_tool_events(parser.consume_events(), required, properties):
+                            if ev.get("type") == "text":
+                                full_text += ev.get("content", "")
+                            elif ev.get("type") == "tool_call":
+                                call = ev["call"]
+                                tool_calls.append(
+                                    {
+                                        "id": f"call_{uuid.uuid4().hex}",
+                                        "type": "function",
+                                        "function": {
+                                            "name": call.get("name", ""),
+                                            "arguments": json.dumps(call.get("arguments", {}), ensure_ascii=False),
+                                        },
+                                    }
+                                )
+                else:
+                    full_text += text
+            elif et == "message_tool_calls":
+                parser.flush_text()
+                for ev in _filter_tool_events(parser.consume_events(), required, properties):
+                    if ev.get("type") == "text":
+                        full_text += ev.get("content", "")
+                for tc in ed.get("tool_calls", []):
+                    fn = tc.get("function", {})
+                    alias_name = fn.get("name", "")
+                    if name_map and alias_name not in name_map:
+                        continue
+                    orig_name = name_map.get(alias_name, alias_name)
+                    try:
+                        args = json.loads(fn.get("arguments", "{}")) if isinstance(fn.get("arguments"), str) else fn.get("arguments", {})
+                    except Exception:
+                        args = {}
+                    events = _filter_tool_events(
+                        [{"type": "tool_call", "call": {"name": orig_name, "arguments": args}}],
+                        required,
+                        properties,
+                    )
+                    for ev in events:
+                        call = ev["call"]
+                        tool_calls.append(
+                            {
+                                "id": f"call_{uuid.uuid4().hex}",
+                                "type": "function",
+                                "function": {
+                                    "name": call.get("name", ""),
+                                    "arguments": json.dumps(call.get("arguments", {}), ensure_ascii=False),
+                                },
+                            }
+                        )
+            elif et == "finish":
+                break
+        parser.finish()
+        for ev in _filter_tool_events(parser.consume_events(), required, properties):
+            if ev.get("type") == "text":
+                full_text += ev.get("content", "")
+            elif ev.get("type") == "tool_call":
+                call = ev["call"]
+                tool_calls.append(
+                    {
+                        "id": f"call_{uuid.uuid4().hex}",
+                        "type": "function",
+                        "function": {
+                            "name": call.get("name", ""),
+                            "arguments": json.dumps(call.get("arguments", {}), ensure_ascii=False),
+                        },
+                    }
+                )
         if token_id:
             _tm.report_success(token_id)
     except Exception as e:
@@ -294,6 +755,12 @@ async def chat_completions(
             )
         )
 
+    message = {"role": "assistant", "content": full_text}
+    finish_reason = "stop"
+    if tool_calls:
+        message["tool_calls"] = tool_calls
+        finish_reason = "tool_calls"
+
     return {
         "id": completion_id,
         "object": "chat.completion",
@@ -302,8 +769,8 @@ async def chat_completions(
         "choices": [
             {
                 "index": 0,
-                "message": {"role": "assistant", "content": full_text},
-                "finish_reason": "stop",
+                "message": message,
+                "finish_reason": finish_reason,
             }
         ],
     }
