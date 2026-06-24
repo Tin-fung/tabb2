@@ -225,7 +225,36 @@ async def _stream_claude_response(
         if isinstance(body.get("thinking"), dict)
         else False
     )
-    parser = ToolifyParser(trigger_signal, thinking_enabled)
+    # 别名→原名映射（map_claude_to_content 注入时建的），parser 解析 invoke 后转回原名
+    name_map = body.get("_tool_name_map", {})
+    required_by_name = {
+        t.get("name", ""): set((t.get("input_schema") or {}).get("required") or [])
+        for t in tools
+        if t.get("name")
+    }
+
+    def _valid_tool_event(ev: dict) -> bool:
+        if ev.get("type") != "tool_call":
+            return True
+        call = ev.get("call") or {}
+        name = call.get("name", "")
+        args = call.get("arguments") or {}
+        missing = [
+            key for key in required_by_name.get(name, set())
+            if key not in args or args.get(key) in (None, "")
+        ]
+        if missing:
+            logger.info(
+                "skip invalid tool_call: %s missing=%s args=%s",
+                name, ",".join(missing), list(args.keys()),
+            )
+            return False
+        return True
+
+    def _filter_tool_events(events: list[dict]) -> list[dict]:
+        return [ev for ev in events if _valid_tool_event(ev)]
+
+    parser = ToolifyParser(trigger_signal, thinking_enabled, name_map=name_map)
 
     # message_start
     yield writer.init_event()
@@ -242,16 +271,56 @@ async def _stream_claude_response(
                 text = ed["content"]
                 for char in text:
                     parser.feed_char(char)
-                    events = parser.consume_events()
+                    events = _filter_tool_events(parser.consume_events())
                     if events:
                         for line in writer.handle_events(events):
                             yield line
-            elif et in ("message_finish", "finish"):
+            elif et == "message_tool_calls":
+                # 上游原生工具调用通道：Tabbit 服务端把工具调用强制走此事件，
+                # 不走 <<CALL>> 文本协议（实测：模型调 cc_Write 时大多走这条）。
+                # 解析 tool_calls 数组，转成 Claude tool_use block。
+                # 先 flush parser 里残留的文本（模型可能在调工具前说了两句）。
+                # 注意：只能 flush_text，不能 finish——finish 会触发 end 事件，
+                # writer 提前发 message_delta/message_stop，导致 tool_use block
+                # 排在 message_stop 之后，Claude Code 收到 stop 就不执行工具了。
+                parser.flush_text()
+                for ev in _filter_tool_events(parser.consume_events()):
+                    for line in writer.handle_events([ev]):
+                        yield line
+                for tc in ed.get("tool_calls", []):
+                    fn = tc.get("function", {})
+                    alias_name = fn.get("name", "")
+                    # 别名转回原名（cc_Write → Write）
+                    orig_name = name_map.get(alias_name, alias_name) if name_map else alias_name
+                    try:
+                        args = json.loads(fn.get("arguments", "{}")) if isinstance(fn.get("arguments"), str) else fn.get("arguments", {})
+                    except Exception:
+                        args = {}
+                    # 只转发生过的别名工具调用；browser_task_tool 等原生工具不转发
+                    # （那些是 Tabbit 内置的，Claude Code 不认）
+                    if name_map and alias_name in name_map:
+                        missing = [
+                            key for key in required_by_name.get(orig_name, set())
+                            if key not in args or args.get(key) in (None, "")
+                        ]
+                        if missing:
+                            logger.info(
+                                "skip invalid native tool_call: %s missing=%s args=%s",
+                                orig_name, ",".join(missing), list(args.keys()),
+                            )
+                            continue
+                        for line in writer.handle_events([{"type": "tool_call", "call": {"name": orig_name, "arguments": args}}]):
+                            yield line
+                        logger.info("native tool_calls → tool_use: %s", orig_name)
+            elif et == "finish":
+                # finish = 整轮结束。message_finish 只是单条子消息结束（上游可能
+                # 连续发多个 message_tool_calls + message_finish，每个工具调用后跟一个
+                # message_finish），不能在此 break，否则后续工具调用全丢。
                 break
 
         # 流结束
         parser.finish()
-        final_events = parser.consume_events()
+        final_events = _filter_tool_events(parser.consume_events())
         if final_events:
             for line in writer.handle_events(final_events):
                 yield line
@@ -265,7 +334,7 @@ async def _stream_claude_response(
             _tm.report_error(token_id)
         # 尝试发送错误后仍然关闭流
         parser.finish()
-        final_events = parser.consume_events()
+        final_events = _filter_tool_events(parser.consume_events())
         if final_events:
             for line in writer.handle_events(final_events):
                 yield line

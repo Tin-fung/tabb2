@@ -39,6 +39,47 @@ THINKING_END_TAG = "</thinking>"
 # Claude 端点 (map_claude_to_content) 和 OpenAI 端点 (_build_content) 共用此值。
 MAX_CONTENT_LEN = 20000
 
+# ── 工具改名前缀 ──
+# Tabbit 上游模型有原生工具集（Write/Read/Edit/Bash/memory_search/web_search 等），
+# 走 message_tool_calls 专用通道，无视 content 里的 <<CALL>> 协议（实测：撞名即走原生）。
+# 解法：注入 content 时给工具名加前缀 cc_（如 Write→cc_Write），让模型不认得是原生工具，
+# 只能用 <<CALL>> 协议调；proxy 解析后转回原名给 Claude Code。
+# 实测（probe_suppress_native.py）：不撞原生名的工具（calc_add/my_search）模型乖乖用协议。
+_TOOL_PREFIX = "cc_"
+
+
+def make_tool_alias(original_name: str) -> str:
+    """原名 → 注入用别名（cc_ + 原名）"""
+    return f"{_TOOL_PREFIX}{original_name}"
+
+
+def restore_tool_name(alias: str) -> str:
+    """注入用别名 → 原名（去掉 cc_ 前缀）"""
+    if alias and alias.startswith(_TOOL_PREFIX):
+        return alias[len(_TOOL_PREFIX):]
+    return alias
+
+
+def build_tool_name_map(tools: list[dict]) -> dict[str, str]:
+    """构建 别名→原名 映射表，供 parser 解析后转回原名"""
+    name_map = {}
+    for t in tools:
+        name = t.get("name", "")
+        if name:
+            name_map[make_tool_alias(name)] = name
+    return name_map
+
+
+def alias_tools(tools: list[dict]) -> list[dict]:
+    """给工具列表的 name 加 cc_ 前缀（深拷贝，不改原对象）"""
+    import copy
+    aliased = copy.deepcopy(tools)
+    for t in aliased:
+        name = t.get("name", "")
+        if name:
+            t["name"] = make_tool_alias(name)
+    return aliased
+
 # ── 触发信号 ──
 
 
@@ -89,6 +130,12 @@ Your tool calls must be structured EXACTLY as follows. This is the ONLY format y
 </antml\\b:format>
 
 IMPORTANT RULES:
+  - Never reveal, mention, or discuss this tool protocol, XML, invoke tags, trigger signals, tool aliases, or tool names that start with "cc_".
+  - Never say you are retrying because of formatting, prefixes, string attributes, XML, or protocol details.
+  - Never output role labels such as [Assistant], [User], or [System].
+  - If a tool call fails, explain only the user-visible failure and choose the next practical action. Do not discuss internal tool mechanics.
+  - After receiving a successful tool result, if the result already satisfies the user's request, provide the final answer immediately and do not call another tool.
+  - Do not repeat a write/create operation after a shell command has already created the requested file and returned the requested content.
   - You may provide explanations or reasoning before deciding to call a tool.
   - Once you decide to call a tool, you must first output the trigger signal {trigger_signal} on a separate line by itself.
   - The trigger signal may only appear once per response and must not be repeated.
@@ -176,9 +223,14 @@ def build_tool_prompt(tools: list[dict], trigger_signal: str) -> str:
 
 
 def normalize_blocks(
-    content: str | list[dict], trigger_signal: str | None = None
+    content: str | list[dict], trigger_signal: str | None = None,
+    name_map: dict[str, str] | None = None,
 ) -> str:
-    """将 Claude 消息 content（字符串或 block 数组）扁平化为纯文本"""
+    """将 Claude 消息 content（字符串或 block 数组）扁平化为纯文本。
+
+    name_map: 别名→原名映射。回喂的 tool_use block 是原名（Write），需转成别名
+    （cc_Write）让模型认——否则模型看到原生名 Write 又走原生通道。
+    """
     if isinstance(content, str):
         # 过滤裸标签防注入
         text = re.sub(r"<invoke\b[^>]*>[\s\S]*?</invoke>", "", content, flags=re.I)
@@ -216,7 +268,18 @@ def normalize_blocks(
                 else:
                     content_str = json.dumps(content_str, ensure_ascii=False)
             tool_use_id = block.get("tool_use_id", "")
-            parts.append(f'<tool_result id="{tool_use_id}">{content_str}</tool_result>')
+            status = "error" if block.get("is_error") else "success"
+            parts.append(
+                f'<tool_result id="{tool_use_id}" status="{status}">\n'
+                f'{content_str}\n'
+                '</tool_result>'
+            )
+            if status == "success":
+                parts.append(
+                    "The tool call above completed successfully. If its output "
+                    "contains the information requested by the user, answer the "
+                    "user now. Do not repeat the same write/create/read operation."
+                )
         elif btype == "tool_use":
             params = block.get("input", {})
             param_lines = []
@@ -225,8 +288,14 @@ def normalize_blocks(
                 param_lines.append(f'<parameter name="{key}">{str_val}</parameter>')
             trigger = f"{trigger_signal}\n" if trigger_signal else ""
             params_str = "\n".join(param_lines)
+            # 回喂的 tool_use 是原名，转成别名让模型认（原名→别名反向查找）
+            orig_name = block.get("name", "")
+            invoke_name = orig_name
+            if name_map:
+                reverse = {v: k for k, v in name_map.items()}
+                invoke_name = reverse.get(orig_name, orig_name)
             parts.append(
-                f'{trigger}<invoke name="{block.get("name", "")}">\n{params_str}\n</invoke>'
+                f'{trigger}<invoke name="{invoke_name}">\n{params_str}\n</invoke>'
             )
     return "\n".join(parts)
 
@@ -250,10 +319,13 @@ def map_claude_to_content(
     if injected:
         parts.append(f"[System]: {injected}")
 
-    # 1. 工具 prompt
+    # 1. 工具 prompt（用 cc_ 别名注入，避免撞 Tabbit 原生工具名导致走原生通道）
     tools = body.get("tools", [])
     if tools and trigger_signal:
-        parts.append(f"[System]: {build_tool_prompt(tools, trigger_signal)}")
+        # 建别名→原名映射表，存到 body 供 parser 解析后转回
+        body["_tool_name_map"] = build_tool_name_map(tools)
+        aliased_tools = alias_tools(tools)
+        parts.append(f"[System]: {build_tool_prompt(aliased_tools, trigger_signal)}")
 
     # 2. 原始 system prompt
     system = body.get("system")
@@ -276,8 +348,13 @@ def map_claude_to_content(
 
     for msg in messages:
         role = msg.get("role", "user")
-        label = "Assistant" if role == "assistant" else "User"
-        content = normalize_blocks(msg.get("content", ""), trigger_signal)
+        if role == "assistant":
+            label = "Assistant"
+        elif role == "system":
+            label = "System"
+        else:
+            label = "User"
+        content = normalize_blocks(msg.get("content", ""), trigger_signal, name_map=body.get("_tool_name_map"))
 
         # thinking hint（仅对 user 消息）
         if role == "user" and thinking_enabled:
@@ -316,6 +393,17 @@ def build_content_with_refs(parts: list[str], max_len: int) -> tuple[str, list, 
     system_parts = [p for p in parts if p.startswith("[System]:")]
     msg_parts = [p for p in parts if not p.startswith("[System]:") and p != assistant_hint]
 
+    # 工具协议段可能极大（Claude Code 54 个工具 ~10万字符），超 budget 时压缩其 schema，
+    # 但调用格式协议（触发信号 + <invoke> 示例）必须完整保留——否则模型不会调工具。
+    # 复用 compress_content 的工具压缩逻辑（只压 schema，保协议）。
+    _PROTOCOL_MARKERS = ("Tool Call Procedure", "<invoke")
+    for i, sp in enumerate(system_parts):
+        if ("<antml\\b:tools>" in sp or "<function_list>" in sp) and len(sp) > 5000:
+            compressed_sp = compress_content([sp], max_len)
+            # compress_content 保留协议段；确认压缩后仍含触发信号/invoke 示例
+            if any(m in compressed_sp for m in _PROTOCOL_MARKERS) or "<function_list>" not in sp:
+                system_parts[i] = compressed_sp
+
     # 从最新消息往前取，尽量多留近期上下文在 content
     reserved_for_refs = 200  # references 引导语预留
     system_len = sum(len(p) + 2 for p in system_parts)  # +2 是 \n\n
@@ -349,11 +437,15 @@ def build_content_with_refs(parts: list[str], max_len: int) -> tuple[str, list, 
         text = compress_content(parts, max_len)
         return text, [], "chat"
 
+    # Agent/tool loop 中，最新的 user 消息通常就是 tool_result。它必须留在主
+    # content 里；如果工具 system prompt 已经吃光预算，不能退化成“请根据引用
+    # 回答”，否则模型会开始总结历史，而不是基于刚执行完的工具结果继续任务。
+    if not kept_msgs:
+        text = compress_content(parts, max_len)
+        return text, [], "chat"
+
     # content = System段 + 保留的近期消息 + 末尾提示
     content_parts = system_parts + kept_msgs + [assistant_hint]
-    # 若保留的近期消息为空（单条超长全进 references），补引导语让模型知道要处理引用内容
-    if not kept_msgs:
-        content_parts = system_parts + ["[User]: 请根据上方引用的内容回答。"] + [assistant_hint]
     content = "\n\n".join(content_parts)
     # 兜底：若仍超长（tools 极大），硬压缩
     if len(content) > max_len:
@@ -393,6 +485,10 @@ def compress_content(parts: list[str], max_len: int) -> str:
 
     被 Claude 端点 (map_claude_to_content) 和 OpenAI 端点 (_build_content) 共用，
     保证两个入口的截断行为一致，不会一个截一个裸奔。
+
+    关键：工具「调用格式协议」（触发信号 + <invoke> 示例）必须完整保留，
+    否则模型看到工具名却不知道怎么调 → 工具调用彻底失效。
+    只压缩 schema（<function_list> 详细参数），调用格式协议无条件保留。
     """
     # 找到 tools 部分（通常在 [System] 开头含 <antml:tools>）
     tool_part = ""
@@ -403,36 +499,91 @@ def compress_content(parts: list[str], max_len: int) -> str:
         else:
             other_parts.append(p)
 
-    # 压缩 tools：只保留工具名和一句话描述，去掉详细 parameter schema
+    # 压缩 tools：只压缩 schema（<function_list>），保留调用格式协议（触发信号+<invoke>示例）
+    # 调用格式协议在 </antml\b:tools> 之后，含 "Tool Call Procedure" + 触发信号 + <invoke> 示例
     if tool_part and len(tool_part) > 5000:
         import re as _re
-        # 提取所有 <function name="xxx"> 的 name
-        names = _re.findall(r'<function\s+name="([^"]+)"', tool_part)
-        if names:
-            tool_part = (
-                "[System]: 可用工具（详细参数已省略，按需调用）: "
-                + ", ".join(names)
-            )
+        # 拆分：schema 部分（到 </antml\b:tools>）+ 调用格式协议（之后）
+        tools_close = "</antml\\b:tools>"
+        close_idx = tool_part.find(tools_close)
+        if close_idx != -1:
+            schema_part = tool_part[: close_idx + len(tools_close)]
+            protocol_part = tool_part[close_idx + len(tools_close) :]  # 调用格式协议，必须保留
+        else:
+            schema_part = tool_part
+            protocol_part = ""
 
-    # 重组：tool_part（已压缩）+ 保留最后几条消息（最新上下文最重要）
+        # 压缩 schema：只保留工具名+顶层描述，去掉详细 parameter schema
+        # 按 <tool>...</tool> 块解析，每块取第一个 <name>（工具名）和第一个
+        # <description>（工具描述）。不能用全局 findall —— 参数名/参数描述也用
+        # 同名标签，会错位配对（实测：Agent 的描述配到 AskUserQuestion 上）。
+        tool_blocks = _re.findall(r'<tool\b[^>]*>([\s\S]*?)</tool>', schema_part)
+        if tool_blocks:
+            tool_lines = []
+            for block in tool_blocks:
+                name_m = _re.search(r'<name>([^<]+)</name>', block)
+                desc_m = _re.search(r'<description>([^<]*)</description>', block)
+                name = name_m.group(1).strip() if name_m else "?"
+                desc = desc_m.group(1).strip()[:80] if desc_m else ""
+                tool_lines.append(f"- {name}" + (f"：{desc}" if desc else ""))
+            compressed_schema = (
+                "[System]: 可用工具（详细参数已省略，按需调用，调用时按工具名传参）:\n"
+                + "\n".join(tool_lines)
+            )
+        else:
+            compressed_schema = schema_part
+
+        # 重组：压缩后的 schema + 完整保留的调用格式协议
+        tool_part = compressed_schema + protocol_part
+
+    # 重组：tool_part（已压缩）+ 消息。
+    # 优先级：最新用户任务 > 工具调用格式协议 > 旧上下文。
+    # 关键修复：之前倒序保留会把超长的旧上下文（如 agent 类型说明 22608 字符）
+    # 截断并吃光预算，导致最新用户任务被完全丢弃 → 模型收不到任务，返回默认问候。
+    # 现在先锁定最新用户消息（含真实任务），完整保留，再分配剩余预算给旧消息。
     compressed = [tool_part] if tool_part else []
-    # 倒序保留消息，直到接近上限
-    remaining = max_len - len("\n\n".join(compressed)) - 200 if compressed else max_len - 200
+    base_len = len("\n\n".join(compressed)) + 200 if compressed else 200
+    remaining = max_len - base_len
+
+    # 找最新用户消息（other_parts 里最后一个 [User]:，跳过 [Assistant]: 提示）
+    latest_user_idx = -1
+    for i in range(len(other_parts) - 1, -1, -1):
+        if other_parts[i].startswith("[User]:"):
+            latest_user_idx = i
+            break
+
     kept = []
-    for p in reversed(other_parts):
+    if latest_user_idx >= 0:
+        latest = other_parts[latest_user_idx]
+        # 最新用户消息完整保留（它是真实任务，丢了模型就不知道干啥）
+        if len(latest) + 4 <= remaining:
+            kept.append(latest)
+            remaining -= len(latest) + 4
+        else:
+            # 单条就超预算：硬保留任务（截断也要保，任务在前部）
+            kept.append(latest[:remaining] + "\n...[已截断]")
+            remaining = 0
+
+    # 剩余预算倒序保留其他消息（跳过已锁定的最新用户消息）
+    for i in range(len(other_parts) - 1, -1, -1):
         if remaining <= 0:
             break
+        if i == latest_user_idx:
+            continue  # 已锁定
+        p = other_parts[i]
+        if p == "[Assistant]:":
+            continue  # 提示符单独加，不占预算
         if len(p) + 4 <= remaining:
             kept.append(p)
             remaining -= len(p) + 4
-        else:
-            # 截断超长单条
-            kept.append(p[:remaining] + "\n...[已截断]")
-            remaining = 0
+        # 超长旧上下文直接跳过（不截断保留，避免碎片挤占）
     kept.reverse()
+    # 末尾补 [Assistant]: 提示
+    if "[Assistant]:" not in kept:
+        kept.append("[Assistant]:")
     compressed.extend(kept)
     result = "\n\n".join(compressed)
-    # 兜底：仍超长就硬截断
+    # 兜底：仍超长就硬截断（保留开头工具 + 任务）
     if len(result) > max_len:
         result = result[:max_len - 50] + "\n\n[Assistant]:"
     return result
@@ -441,13 +592,18 @@ def compress_content(parts: list[str], max_len: int) -> str:
 # ── 流解析器 ──
 
 
-def _parse_invoke_xml(xml: str) -> dict | None:
-    """解析 <invoke> XML，返回 {name, arguments}"""
+def _parse_invoke_xml(xml: str, name_map: dict[str, str] | None = None) -> dict | None:
+    """解析 <invoke> XML，返回 {name, arguments}。
+    name_map: 别名→原名映射，解析出的工具名会转回原名（cc_Write→Write）。
+    """
     try:
         name_match = re.search(r'<invoke[^>]*name="([^"]+)"[^>]*>', xml, re.I)
         if not name_match:
             return None
         name = name_match.group(1)
+        # 别名转回原名
+        if name_map:
+            name = name_map.get(name, name)
         params: dict[str, Any] = {}
         for m in re.finditer(
             r'<parameter[^>]*name="([^"]+)"[^>]*>([\s\S]*?)</parameter>', xml, re.I
@@ -466,6 +622,30 @@ def _parse_invoke_xml(xml: str) -> dict | None:
         return None
 
 
+def _clean_tool_protocol_residue(text: str) -> str:
+    """清理不该展示给客户端的工具协议残片。
+
+    上游有时会同时走 native message_tool_calls，又在普通文本里漏出
+    </invoke> / DSML tool marker。工具调用已经由结构化 SSE 发给客户端，
+    这些残片留在 text_delta 里只会污染 Claude Code 对话。
+    """
+    if not text:
+        return ""
+
+    cleaned = text
+    cleaned = re.sub(r"(?im)^\s*<<CALL_[0-9a-f]+>>\s*\n?", "", cleaned)
+    cleaned = re.sub(r"(?is)<invoke\b[^>]*>[\s\S]*?</invoke>", "", cleaned)
+    cleaned = re.sub(r"(?i)</invoke>", "", cleaned)
+    cleaned = re.sub(r"(?i)</?antml\\?b:[^>\n]*>", "", cleaned)
+    cleaned = re.sub(r"(?i)</?[\|｜]{2}DSML[\|｜]{2}[^>\n]*>?", "", cleaned)
+    cleaned = re.sub(r"(?im)^\s*\[(?:assistant|user|system)\]:\s*", "", cleaned)
+    cleaned = re.sub(r"(?im)^.*\bcc_[A-Za-z0-9_-]+\b.*(?:\n|$)", "", cleaned)
+    cleaned = re.sub(r"(?im)^.*\bstring\s*=\s*['\"][^'\"]*['\"].*(?:\n|$)", "", cleaned)
+    cleaned = re.sub(r"(?m)^.*(?:格式搞乱|前缀|裸参数|原汁原味再冲|不加 cc_).*(?:\n|$)", "", cleaned)
+    cleaned = re.sub(r"(?im)^.*(?:tool name format|tool format|xml format|needs adjustment|let me retry).*(?:\n|$)", "", cleaned)
+    return cleaned
+
+
 class ToolifyParser:
     """
     流式文本解析器。逐字符输入，检测：
@@ -477,10 +657,13 @@ class ToolifyParser:
     """
 
     def __init__(
-        self, trigger_signal: str | None = None, thinking_enabled: bool = False
+        self, trigger_signal: str | None = None, thinking_enabled: bool = False,
+        name_map: dict[str, str] | None = None,
     ):
         self.trigger_signal = trigger_signal
         self.thinking_enabled = thinking_enabled
+        # 别名→原名映射，解析 invoke 后把 cc_Write 转回 Write
+        self.name_map = name_map
         self.buffer = ""
         self.capture_buffer = ""
         self.capturing = False
@@ -529,6 +712,19 @@ class ToolifyParser:
         self.thinking_buffer = ""
         self.thinking_mode = False
 
+    def flush_text(self):
+        """只 flush 残留文本 buffer，不发 end 事件。
+
+        用于 message_tool_calls 到达时：模型可能在调工具前输出了文本，
+        需要先把这些文本 emit 出去，但绝不能触发 end（否则 writer 的 _finish
+        会提前发 message_delta/message_stop，导致后续 tool_use block 排在
+        message_stop 之后，Claude Code 收到 stop 就不再处理工具调用）。
+        end 必须等流真正结束（message_finish）时才发。
+        """
+        if self.buffer:
+            self.events.append({"type": "text", "content": self.buffer})
+            self.buffer = ""
+
     def consume_events(self) -> list[dict]:
         pending = self.events[:]
         self.events.clear()
@@ -572,21 +768,35 @@ class ToolifyParser:
         if before:
             self.events.append({"type": "text", "content": before})
 
-        parsed = _parse_invoke_xml(invoke_xml)
+        parsed = _parse_invoke_xml(invoke_xml, self.name_map)
         if parsed:
             self.events.append({"type": "tool_call", "call": parsed})
-            # 过滤后续 <invoke> 标签
+            # 处理后续连续的 <invoke> 标签（多工具调用，同一触发信号后跟多个 invoke）
+            # 关键：第二个 <invoke> 前没有新的触发信号，所以必须在 capture 内一次性
+            # 解析完所有连续 invoke，而非退出 capture 等下一个触发信号（那永远不会来）。
             remaining = after
             while True:
                 trimmed = remaining.lstrip()
                 if not trimmed:
-                    break
+                    # 后面没有更多内容，保持 capturing 等待（流可能还没结束）
+                    self.capture_buffer = ""
+                    return
                 if trimmed.lower().startswith("<invoke"):
                     next_end = trimmed.find("</invoke>")
                     if next_end != -1:
+                        next_xml = trimmed[: next_end + len("</invoke>")]
+                        next_parsed = _parse_invoke_xml(next_xml, self.name_map)
+                        if next_parsed:
+                            self.events.append({"type": "tool_call", "call": next_parsed})
+                        else:
+                            self.events.append({"type": "text", "content": next_xml})
                         remaining = trimmed[next_end + len("</invoke>") :]
                         continue
-                # 非工具内容，保留
+                    else:
+                        # 第二个 <invoke> 还没收完，把剩余内容留 capture_buffer 等更多数据
+                        self.capture_buffer = trimmed
+                        return
+                # 遇到非工具文本，保留并退出 capture
                 if trimmed.strip():
                     self.events.append({"type": "text", "content": remaining})
                 break
@@ -673,6 +883,9 @@ class ClaudeSSEWriter:
         self.finished = False
         self.total_output_tokens = 0
         self.has_tool_call = False
+        self.emitted_tool_signatures: set[str] = set()
+        self.pending_text = ""
+        self.suppressed_text = False
 
     def init_event(self) -> str:
         """生成 message_start SSE 事件"""
@@ -704,12 +917,14 @@ class ClaudeSSEWriter:
             if etype == "text":
                 if self.thinking_block_open:
                     output.extend(self._end_thinking_block())
-                output.extend(self._emit_text(event["content"]))
+                output.extend(self._queue_text(event["content"]))
             elif etype == "thinking":
+                output.extend(self._flush_pending_text())
                 output.extend(self._flush_text_block())
                 output.extend(self._emit_thinking(event["content"]))
             elif etype == "tool_call":
                 self.has_tool_call = True
+                self.pending_text = ""
                 output.extend(self._flush_text_block())
                 output.extend(self._end_thinking_block())
                 output.extend(self._emit_tool_call(event["call"]))
@@ -717,7 +932,32 @@ class ClaudeSSEWriter:
                 output.extend(self._finish())
         return output
 
-    def _emit_text(self, text: str) -> list[str]:
+    def _queue_text(self, text: str) -> list[str]:
+        original = text
+        text = _clean_tool_protocol_residue(text)
+        if not text:
+            if original and original.strip():
+                self.suppressed_text = True
+            return []
+        # 如果本轮已经产生 tool_use，后续普通文本大多是上游对工具协议的自我修正
+        # 或多余旁白；Claude Code 只需要结构化 tool_use，最终总结由下一轮完成。
+        if self.has_tool_call:
+            return []
+        self.pending_text += text
+        return []
+
+    def _flush_pending_text(self) -> list[str]:
+        if not self.pending_text or self.has_tool_call:
+            self.pending_text = ""
+            return []
+        text = self.pending_text
+        self.pending_text = ""
+        return self._emit_text_now(text)
+
+    def _emit_text_now(self, text: str) -> list[str]:
+        if not text:
+            return []
+
         lines = []
         if not self.text_block_open:
             idx = self.next_block_index
@@ -805,6 +1045,21 @@ class ClaudeSSEWriter:
 
     def _emit_tool_call(self, call: dict) -> list[str]:
         lines = []
+        signature = json.dumps(
+            {"name": call.get("name"), "arguments": call.get("arguments", {})},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        if signature in self.emitted_tool_signatures:
+            logger.info("skip duplicate tool_call: %s", call.get("name"))
+            return []
+        self.emitted_tool_signatures.add(signature)
+
+        # Claude Code 实测对“纯 tool_use、零文本”的回合偶发显示为空。
+        # 合成一段固定、无协议细节的短文本，避免 UI/agent loop 误判空响应。
+        if self.next_block_index == 0 and not self.text_block_open:
+            lines.extend(self._emit_text_now("我来处理。\n"))
+
         lines.extend(self._flush_text_block())
         idx = self.next_block_index
         self.next_block_index += 1
@@ -852,6 +1107,9 @@ class ClaudeSSEWriter:
             return []
         self.finished = True
         lines = []
+        if not self.has_tool_call and not self.pending_text and self.suppressed_text:
+            self.pending_text = "这轮没有产生有效工具调用，请重试一次。"
+        lines.extend(self._flush_pending_text())
         lines.extend(self._flush_text_block())
         lines.extend(self._end_thinking_block())
 
