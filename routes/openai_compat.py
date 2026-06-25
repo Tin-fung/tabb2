@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from core.tabbit_client import TabbitClient, MODEL_MAP
+from core.tabbit_client import TabbitClient, resolve_model
 from core.token_manager import TokenManager
 from core.log_store import LogStore, LogEntry
 from core.config import ConfigManager
@@ -270,7 +270,8 @@ async def _get_client_and_token(
         _fallback_clients.set(token, client)
 
     # 定期清理过期缓存（1% 概率触发）
-    if time.time() % 100 < 1:
+    import random
+    if random.random() < 0.01:
         _fallback_clients.cleanup()
 
     return client, "bearer", ""
@@ -598,12 +599,9 @@ async def chat_completions(
     req: ChatCompletionRequest, authorization: str = Header(None)
 ):
     client, token_name, token_id = await _get_client_and_token(authorization)
-    # 优先用动态模型注册表，未命中用静态 MODEL_MAP 兜底
-    registry = get_registry()
-    if registry and registry.ready:
-        tabbit_model = registry.resolve(req.model)
-    else:
-        tabbit_model = MODEL_MAP.get(req.model.lower(), "Default")
+    # 模型解析：与 Claude 端点共用 resolve_model，保证映射行为一致
+    default_model = _cfg.get("claude", "default_model") if _cfg else None
+    tabbit_model = resolve_model(req.model, get_registry(), default_model)
     tools = _normalize_openai_tools(req.tools)
     trigger_signal = random_trigger_signal() if tools else None
     name_map = build_tool_name_map(tools) if tools else {}

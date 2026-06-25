@@ -27,9 +27,13 @@ cfg = ConfigManager()
 token_manager = TokenManager(cfg)
 log_store = LogStore(max_entries=cfg.get("logging", "max_entries", default=500))
 # 动态模型注册表（从上游拉取真实模型清单）
+# 取第一个可用 token 用于认证拉取（/proxy 接口需要 JWT cookie）
+_tokens = cfg.get("tokens", default=[]) or []
+_first_token = next((t["value"] for t in _tokens if t.get("enabled", True)), None)
 model_registry = init_registry(
     cfg.get("tabbit", "base_url", default="https://web.tabbit.ai"),
     verify_ssl=cfg.get("tabbit", "verify_ssl", default=False),
+    token_str=_first_token,
 )
 
 # ── 初始化路由模块 ──
@@ -66,14 +70,17 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 # ── CORS 中间件 ──
-# 默认允许同源请求，生产环境可根据需要调整
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # 生产环境建议限制为具体域名
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# 管理面板和 API 端点都在同源，不需要开放跨域。
+# 如需跨域（如前端部署在不同域名），在 config.json 中设置 cors_origins 列表。
+_cors_origins = cfg.get("cors_origins", default=None)
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 # ── 安全中间件 ──
 
@@ -94,7 +101,12 @@ api_requests: dict[str, list[float]] = defaultdict(list)
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
     """安全中间件：请求体大小限制 + 速率限制"""
-    client_ip = request.client.host if request.client else "unknown"
+    # 优先从反向代理头取真实 IP（nginx: proxy_set_header X-Real-IP $remote_addr）
+    client_ip = (
+        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        or request.headers.get("x-real-ip", "").strip()
+        or (request.client.host if request.client else "unknown")
+    )
     now = time.time()
 
     # 1. 请求体大小限制

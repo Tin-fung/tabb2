@@ -37,9 +37,10 @@ MODELS_API_PATH = "/proxy/v1/model_config/models?a=0"
 class ModelRegistry:
     """模型注册表：动态拉取 + 缓存 + fallback"""
 
-    def __init__(self, base_url: str = "https://web.tabbit.ai", verify_ssl: bool = False):
+    def __init__(self, base_url: str = "https://web.tabbit.ai", verify_ssl: bool = False, token_str: str | None = None):
         self.base_url = base_url
         self.verify_ssl = verify_ssl
+        self._token_str = token_str  # 认证 token（JWT|NEXT_AUTH|DEVICE_ID 格式）
         self._cache: Optional[dict] = None  # {alias: selected_model}
         self._models_meta: Optional[list] = None  # 完整模型元信息
         self._expires_at: float = 0
@@ -91,6 +92,10 @@ class ModelRegistry:
                 alias_map["最佳"] = selected
         return alias_map, models_meta
 
+    def update_token(self, token_str: str | None) -> None:
+        """更新认证 token（运行时添加新 token 后调用）"""
+        self._token_str = token_str
+
     async def refresh(self, force: bool = False) -> bool:
         """拉取最新模型清单，成功返回 True。
 
@@ -128,11 +133,33 @@ class ModelRegistry:
     async def _fetch_once(self) -> bool:
         """单次拉取，成功更新缓存并返回 True。"""
         try:
+            # 构建认证 cookie（上游 /proxy 接口需要 JWT 认证）
+            cookies = {}
+            if self._token_str:
+                import uuid as _uuid
+                parts = self._token_str.split("|")
+                jwt_token = parts[0]
+                # 从 JWT 提取 user_id
+                try:
+                    import json, base64
+                    payload = json.loads(base64.urlsafe_b64decode(jwt_token.split(".")[1] + "=="))
+                    user_id = payload.get("id", payload.get("sub", ""))
+                except Exception:
+                    user_id = ""
+                cookies = {
+                    "token": jwt_token,
+                    "user_id": user_id,
+                    "managed": "tab_browser",
+                    "NEXT_LOCALE": "zh",
+                }
+                if len(parts) > 1:
+                    cookies["next-auth.session-token"] = parts[1]
+
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(connect=10, read=20, write=10, pool=10),
                 verify=self.verify_ssl,
             ) as client:
-                resp = await client.get(f"{self.base_url}{MODELS_API_PATH}")
+                resp = await client.get(f"{self.base_url}{MODELS_API_PATH}", cookies=cookies)
                 if resp.status_code != 200:
                     logger.warning("model registry refresh failed: %s", resp.status_code)
                     return False
@@ -199,9 +226,9 @@ class ModelRegistry:
 _registry: Optional[ModelRegistry] = None
 
 
-def init_registry(base_url: str = "https://web.tabbit.ai", verify_ssl: bool = False) -> ModelRegistry:
+def init_registry(base_url: str = "https://web.tabbit.ai", verify_ssl: bool = False, token_str: str | None = None) -> ModelRegistry:
     global _registry
-    _registry = ModelRegistry(base_url, verify_ssl)
+    _registry = ModelRegistry(base_url, verify_ssl, token_str)
     return _registry
 
 

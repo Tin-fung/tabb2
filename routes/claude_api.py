@@ -15,7 +15,7 @@ from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import StreamingResponse
 
 from core.config import ConfigManager
-from core.tabbit_client import TabbitClient, MODEL_MAP
+from core.tabbit_client import TabbitClient, resolve_model
 from core.token_manager import TokenManager
 from core.log_store import LogStore, LogEntry
 from core.model_registry import get_registry
@@ -65,61 +65,11 @@ class TTLCache:
 
 _fallback_clients = TTLCache(ttl=3600)  # 1 小时过期
 
-# Claude 模型名 → Tabbit 模型名映射
-# Claude 模型名 → Tabbit 对应型号族。
-# 按型号族映射（opus→Opus-4.8, sonnet→Sonnet-4.6, haiku→Haiku-4.5），
-# 让用户选 opus 真用 premium Opus（消额度），选 haiku 用免费 Haiku。
-# Tabbit 侧无 3.x/4.0-4.4，统一归到当前最新同族型号。
-# 保留 3-5/3-7 老前缀作老客户端兼容层——Claude Code 旧版本或锁定旧模型名的
-# 配置仍在发这些名，删了会静默降级到 Default（用户不知情）。
-# 不含 claude-opus-3/claude-sonnet-3：Anthropic 从未发过此命名，死代码已清。
-CLAUDE_MODEL_MAP = {
-    # Opus 族 → Claude-Opus-4.8 (premium_only)
-    "claude-opus-4": "Claude-Opus-4.8",
-    # Sonnet 族 → Claude-Sonnet-4.6 (premium_only)
-    "claude-sonnet-4": "Claude-Sonnet-4.6",
-    "claude-3-7-sonnet": "Claude-Sonnet-4.6",
-    "claude-3-5-sonnet": "Claude-Sonnet-4.6",
-    # Haiku 族 → Claude-Haiku-4.5 (free_metered)
-    "claude-haiku-4": "Claude-Haiku-4.5",
-    "claude-3-5-haiku": "Claude-Haiku-4.5",
-}
-
-
 def init(token_manager: TokenManager, config: ConfigManager, log_store: LogStore):
     global _tm, _cfg, _logs
     _tm = token_manager
     _cfg = config
     _logs = log_store
-
-
-def _resolve_tabbit_model(model: str) -> str:
-    """将请求中的模型名映射到 Tabbit 模型"""
-    # 优先用动态模型注册表
-    registry = get_registry()
-    if registry and registry.ready:
-        # 精确匹配动态清单
-        if registry.has_alias(model):
-            return registry.resolve(model)
-        # Claude 模型名 → best → 动态解析
-        for prefix, target in CLAUDE_MODEL_MAP.items():
-            if model.startswith(prefix):
-                return registry.resolve(target)
-        # config 默认模型
-        default = _cfg.get("claude", "default_model") if _cfg else None
-        if default and registry.has_alias(default):
-            return registry.resolve(default)
-        return registry.resolve(model)  # 兜底 Default
-    # 动态注册表不可用时，用静态 MODEL_MAP
-    if model in MODEL_MAP:
-        return MODEL_MAP[model]
-    for prefix, target in CLAUDE_MODEL_MAP.items():
-        if model.startswith(prefix):
-            return MODEL_MAP.get(target, "Default")
-    default = _cfg.get("claude", "default_model") if _cfg else None
-    if default and default in MODEL_MAP:
-        return MODEL_MAP[default]
-    return "Default"
 
 
 async def _get_client_and_token(
@@ -161,7 +111,8 @@ async def _get_client_and_token(
         _fallback_clients.set(token, client)
 
     # 定期清理过期缓存（1% 概率触发）
-    if time.time() % 100 < 1:
+    import random
+    if random.random() < 0.01:
         _fallback_clients.cleanup()
 
     return client, "bearer", ""
@@ -365,7 +316,8 @@ async def claude_messages(request: Request):
     client, token_name, token_id = await _get_client_and_token(request)
 
     # 模型映射
-    tabbit_model = _resolve_tabbit_model(body.get("model", "best"))
+    default_model = _cfg.get("claude", "default_model") if _cfg else None
+    tabbit_model = resolve_model(body.get("model", "best"), get_registry(), default_model)
 
     # 工具调用准备
     tools = body.get("tools", [])

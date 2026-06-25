@@ -60,6 +60,22 @@ class PasswordUpdateRequest(BaseModel):
 router = APIRouter(prefix="/api/admin")
 
 
+def _get_admin_client(token_id: str | None = None):
+    """获取 admin 用的 (token_info, client)，复用 TokenManager 缓存。
+    不传 token_id 取第一个 enabled token。"""
+    tokens = _cfg.get("tokens", default=[]) or []
+    if token_id:
+        info, client = _tm.get_client_for_token(token_id)
+        if not info:
+            return None, None
+        return info, client
+    target = next((t for t in tokens if t.get("enabled", True)), None)
+    if not target:
+        return None, None
+    info, client = _tm.get_client_for_token(target["id"])
+    return info, client
+
+
 def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore):
     global _cfg, _tm, _logs, router
     _cfg = config
@@ -304,6 +320,12 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
         registry = get_registry()
         if not registry:
             raise HTTPException(status_code=503, detail="model registry not initialized")
+        # 确保 registry 有认证 token（运行时可能新增了 token）
+        if not registry._token_str:
+            tokens = _cfg.get("tokens", default=[]) or []
+            first = next((t["value"] for t in tokens if t.get("enabled", True)), None)
+            if first:
+                registry.update_token(first)
         ok = await registry.refresh(force=True)
         models = registry.list_models() if ok else []
         return {"ok": ok, "count": len(models), "models": models}
@@ -435,14 +457,15 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
 
         results = []
         for t in targets:
-            client = TabbitClient(
-                t["value"],
-                _cfg.get("tabbit", "base_url"),
-                _cfg.get("tabbit", "client_id"),
-                _cfg.get("tabbit", "browser_version"),
-                _cfg.get("tabbit", "sparkle_version"),
-                _cfg.get("tabbit", "default_browser", default=True),
-            )
+            info, client = _tm.get_client_for_token(t["id"])
+            if not client:
+                results.append({
+                    "token_id": t["id"],
+                    "token_name": t.get("name", ""),
+                    "ok": False,
+                    "error": "client not available",
+                })
+                continue
             try:
                 quota = await client.get_quota_usage()
                 results.append({
@@ -458,8 +481,6 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
                     "ok": False,
                     "error": str(e),
                 })
-            finally:
-                await client.client.aclose()
         return {"ok": True, "results": results}
 
     # ── 重置券列表查询 ──
@@ -482,21 +503,14 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             return {"ok": False, "error": "无可用 token", "results": []}
 
         t = targets[0]
-        client = TabbitClient(
-            t["value"],
-            _cfg.get("tabbit", "base_url"),
-            _cfg.get("tabbit", "client_id"),
-            _cfg.get("tabbit", "browser_version"),
-            _cfg.get("tabbit", "sparkle_version"),
-            _cfg.get("tabbit", "default_browser", default=True),
-        )
+        info, client = _get_admin_client(t["id"])
+        if not client:
+            return {"ok": False, "error": "client not available"}
         try:
             coupons = await client.get_coupon_list(coupon_type=coupon_type, status=status)
             return {"ok": True, "token_id": t["id"], "token_name": t.get("name", ""), "coupons": coupons}
         except Exception as e:
             return {"ok": False, "error": str(e)}
-        finally:
-            await client.client.aclose()
 
     # ── 领取重置券（参与活动）──
     @r.post("/coupons/claim", dependencies=[Depends(admin_dep)])
@@ -518,21 +532,14 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             return {"ok": False, "error": "无可用 token"}
 
         t = targets[0]
-        client = TabbitClient(
-            t["value"],
-            _cfg.get("tabbit", "base_url"),
-            _cfg.get("tabbit", "client_id"),
-            _cfg.get("tabbit", "browser_version"),
-            _cfg.get("tabbit", "sparkle_version"),
-            _cfg.get("tabbit", "default_browser", default=True),
-        )
+        info, client = _get_admin_client(t["id"])
+        if not client:
+            return {"ok": False, "error": "client not available"}
         try:
             result = await client.participate_activity()
             return {"ok": True, "token_id": t["id"], "token_name": t.get("name", ""), "result": result}
         except Exception as e:
             return {"ok": False, "error": str(e)}
-        finally:
-            await client.client.aclose()
 
     # ── 使用重置券 ──
     @r.post("/coupons/use", dependencies=[Depends(admin_dep)])
@@ -553,21 +560,14 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             return {"ok": False, "error": "无可用 token"}
 
         t = targets[0]
-        client = TabbitClient(
-            t["value"],
-            _cfg.get("tabbit", "base_url"),
-            _cfg.get("tabbit", "client_id"),
-            _cfg.get("tabbit", "browser_version"),
-            _cfg.get("tabbit", "sparkle_version"),
-            _cfg.get("tabbit", "default_browser", default=True),
-        )
+        info, client = _get_admin_client(t["id"])
+        if not client:
+            return {"ok": False, "error": "client not available"}
         try:
             result = await client.use_coupon(coupon_code)
             return {"ok": True, "token_id": t["id"], "token_name": t.get("name", ""), "result": result}
         except Exception as e:
             return {"ok": False, "error": str(e)}
-        finally:
-            await client.client.aclose()
 
     # ── 重置券商品信息 ──
     @r.get("/coupons/sku", dependencies=[Depends(admin_dep)])
@@ -580,21 +580,14 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             return {"ok": False, "error": "无可用 token"}
 
         t = targets[0]
-        client = TabbitClient(
-            t["value"],
-            _cfg.get("tabbit", "base_url"),
-            _cfg.get("tabbit", "client_id"),
-            _cfg.get("tabbit", "browser_version"),
-            _cfg.get("tabbit", "sparkle_version"),
-            _cfg.get("tabbit", "default_browser", default=True),
-        )
+        info, client = _get_admin_client(t["id"])
+        if not client:
+            return {"ok": False, "error": "client not available"}
         try:
             sku = await client.get_reset_coupon_sku()
             return {"ok": True, "sku": sku}
         except Exception as e:
             return {"ok": False, "error": str(e)}
-        finally:
-            await client.client.aclose()
 
     # ── 签到状态查询 ──
     @r.get("/sign-in/status", dependencies=[Depends(admin_dep)])
@@ -612,21 +605,14 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             return {"ok": False, "error": "无可用 token"}
 
         t = targets[0]
-        client = TabbitClient(
-            t["value"],
-            _cfg.get("tabbit", "base_url"),
-            _cfg.get("tabbit", "client_id"),
-            _cfg.get("tabbit", "browser_version"),
-            _cfg.get("tabbit", "sparkle_version"),
-            _cfg.get("tabbit", "default_browser", default=True),
-        )
+        info, client = _get_admin_client(t["id"])
+        if not client:
+            return {"ok": False, "error": "client not available"}
         try:
             status = await client.get_sign_in_status()
             return {"ok": True, "token_id": t["id"], "token_name": t.get("name", ""), "status": status}
         except Exception as e:
             return {"ok": False, "error": str(e)}
-        finally:
-            await client.client.aclose()
 
     # ── 执行签到 ──
     @r.post("/sign-in", dependencies=[Depends(admin_dep)])
@@ -644,21 +630,14 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             return {"ok": False, "error": "无可用 token"}
 
         t = targets[0]
-        client = TabbitClient(
-            t["value"],
-            _cfg.get("tabbit", "base_url"),
-            _cfg.get("tabbit", "client_id"),
-            _cfg.get("tabbit", "browser_version"),
-            _cfg.get("tabbit", "sparkle_version"),
-            _cfg.get("tabbit", "default_browser", default=True),
-        )
+        info, client = _get_admin_client(t["id"])
+        if not client:
+            return {"ok": False, "error": "client not available"}
         try:
             result = await client.sign_in()
             return {"ok": True, "token_id": t["id"], "token_name": t.get("name", ""), "result": result}
         except Exception as e:
             return {"ok": False, "error": str(e)}
-        finally:
-            await client.client.aclose()
 
     # ── 额度池详情查询 ──
     @r.get("/quota/pools", dependencies=[Depends(admin_dep)])
@@ -677,14 +656,15 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
 
         results = []
         for t in targets:
-            client = TabbitClient(
-                t["value"],
-                _cfg.get("tabbit", "base_url"),
-                _cfg.get("tabbit", "client_id"),
-                _cfg.get("tabbit", "browser_version"),
-                _cfg.get("tabbit", "sparkle_version"),
-                _cfg.get("tabbit", "default_browser", default=True),
-            )
+            info, client = _tm.get_client_for_token(t["id"])
+            if not client:
+                results.append({
+                    "token_id": t["id"],
+                    "token_name": t.get("name", ""),
+                    "ok": False,
+                    "error": "client not available",
+                })
+                continue
             try:
                 pools = await client.get_quota_pools()
                 results.append({
@@ -700,8 +680,6 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
                     "ok": False,
                     "error": str(e),
                 })
-            finally:
-                await client.client.aclose()
         return {"ok": True, "results": results}
 
     # ── 使用记录查询 ──
@@ -720,21 +698,14 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             return {"ok": False, "error": "无可用 token", "results": []}
 
         t = targets[0]
-        client = TabbitClient(
-            t["value"],
-            _cfg.get("tabbit", "base_url"),
-            _cfg.get("tabbit", "client_id"),
-            _cfg.get("tabbit", "browser_version"),
-            _cfg.get("tabbit", "sparkle_version"),
-            _cfg.get("tabbit", "default_browser", default=True),
-        )
+        info, client = _get_admin_client(t["id"])
+        if not client:
+            return {"ok": False, "error": "client not available"}
         try:
             records = await client.get_usage_records(page=page, limit=limit)
             return {"ok": True, "token_id": t["id"], "token_name": t.get("name", ""), "records": records}
         except Exception as e:
             return {"ok": False, "error": str(e)}
-        finally:
-            await client.client.aclose()
 
     # ── 诊断（深度健康检查，固化 493/492 排查经验）──
 

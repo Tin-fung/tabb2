@@ -58,8 +58,10 @@ MODEL_MAP = {
     "gemini-3-pro": "gemini-3-pro-preview",
     "gemini-3-flash": "gemini-3-flash-preview",
     "gemini-2.5-flash": "gemini-2.5-flash",
-    "claude-sonnet-4.5": "claude-sonnet-4-5@20250929",
-    "claude-haiku-4.5": "claude-haiku-4-5@20251001",
+    # Claude 模型族（CLAUDE_MODEL_MAP 映射的 target 必须在此注册）
+    "Claude-Opus-4.8": "Claude-Opus-4.8",
+    "Claude-Sonnet-4.6": "Claude-Sonnet-4.6",
+    "Claude-Haiku-4.5": "Claude-Haiku-4.5",
     "glm-5": "glm-5",
     "glm-4.7": "glm-4.7",
     "deepseek-v3.2": "byteplus/deepseek-v3-2",
@@ -69,6 +71,71 @@ MODEL_MAP = {
     "qwen3-max": "qwen3-max",
     "doubao-seed-1.8": "byteplus/seed-1-8",
 }
+
+
+# Claude 模型名 → Tabbit 模型名映射（Claude/OpenAI 两端共用）
+# 按型号族映射（opus→Opus-4.8, sonnet→Sonnet-4.6, haiku→Haiku-4.5），
+# 让用户选 opus 真用 premium Opus（消额度），选 haiku 用免费 Haiku。
+# Tabbit 侧无 3.x/4.0-4.4，统一归到当前最新同族型号。
+# 保留 3-5/3-7 老前缀作老客户端兼容层——Claude Code 旧版本或锁定旧模型名的
+# 配置仍在发这些名，删了会静默降级到 Default（用户不知情）。
+# 不含 claude-opus-3/claude-sonnet-3：Anthropic 从未发过此命名，死代码已清。
+CLAUDE_MODEL_MAP = {
+    # Opus 族 → Claude-Opus-4.8 (premium_only)
+    "claude-opus-4": "Claude-Opus-4.8",
+    # Sonnet 族 → Claude-Sonnet-4.6 (premium_only)
+    "claude-sonnet-4": "Claude-Sonnet-4.6",
+    "claude-3-7-sonnet": "Claude-Sonnet-4.6",
+    "claude-3-5-sonnet": "Claude-Sonnet-4.6",
+    # Haiku 族 → Claude-Haiku-4.5 (free_metered)
+    "claude-haiku-4": "Claude-Haiku-4.5",
+    "claude-3-5-haiku": "Claude-Haiku-4.5",
+}
+
+
+def resolve_model(
+    model: str,
+    registry=None,
+    default_model: str | None = None,
+) -> str:
+    """将请求模型名解析为 Tabbit selected_model。
+
+    Claude 端点和 OpenAI 端点共用此函数，保证映射行为一致。
+
+    优先级：
+    1. 动态注册表精确匹配
+    2. CLAUDE_MODEL_MAP 前缀匹配 → 动态注册表解析
+    3. 静态 MODEL_MAP 精确匹配
+    4. CLAUDE_MODEL_MAP 前缀匹配 → 静态 MODEL_MAP 解析
+    5. config 默认模型
+    6. Default
+    """
+    if not model:
+        model = "best"
+
+    # 路径 1-2：动态注册表可用
+    if registry and registry.ready:
+        # 精确匹配动态清单
+        if registry.has_alias(model):
+            return registry.resolve(model)
+        # Claude 模型名前缀 → 动态解析
+        for prefix, target in CLAUDE_MODEL_MAP.items():
+            if model.startswith(prefix):
+                return registry.resolve(target)
+        # config 默认模型
+        if default_model and registry.has_alias(default_model):
+            return registry.resolve(default_model)
+        return registry.resolve(model)  # 兜底 Default
+
+    # 路径 3-4：动态注册表不可用，用静态 MODEL_MAP
+    if model in MODEL_MAP:
+        return MODEL_MAP[model]
+    for prefix, target in CLAUDE_MODEL_MAP.items():
+        if model.startswith(prefix):
+            return MODEL_MAP.get(target, "Default")
+    if default_model and default_model in MODEL_MAP:
+        return MODEL_MAP[default_model]
+    return "Default"
 
 
 class TabbitClient:

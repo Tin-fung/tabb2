@@ -13,7 +13,7 @@ class TokenManager:
     def __init__(self, config: ConfigManager):
         self.config = config
         self._clients: dict[str, TabbitClient] = {}
-        self._index: int = 0
+        self._last_token_id: str | None = None  # 上次使用的 token_id（稳定轮转）
         self._cooldowns: dict[str, float] = {}  # token_id -> 冷却截止时间戳
         self._lock = asyncio.Lock()
 
@@ -57,11 +57,28 @@ class TokenManager:
             available = self._get_available_tokens()
             if not available:
                 return None, None
-            self._index = self._index % len(available)
-            token_info = available[self._index]
-            self._index = (self._index + 1) % len(available)
+            # 稳定轮转：找上次 token_id 的下一个位置
+            if self._last_token_id:
+                ids = [t["id"] for t in available]
+                try:
+                    idx = ids.index(self._last_token_id)
+                    next_idx = (idx + 1) % len(available)
+                except ValueError:
+                    next_idx = 0
+            else:
+                next_idx = 0
+            token_info = available[next_idx]
+            self._last_token_id = token_info["id"]
             client = self._get_client(token_info)
             return token_info, client
+
+    def get_client_for_token(self, token_id: str) -> tuple[Optional[dict], Optional[TabbitClient]]:
+        """按 token_id 获取 client（复用缓存，供 admin API 使用）"""
+        for t in self.config.get("tokens", default=[]):
+            if t["id"] == token_id:
+                client = self._get_client(t)
+                return t, client
+        return None, None
 
     def report_success(self, token_id: str):
         for t in self.config.get("tokens", default=[]):
