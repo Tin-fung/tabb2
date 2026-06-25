@@ -1033,19 +1033,61 @@ function renderDiagResult(r) {
 // ── 额度查询 ──
 
 let lastQuotaResult = null; // 缓存额度结果，切页面后恢复
+let lastCouponsResult = null; // 缓存重置券结果
+let lastSignInStatus = null; // 缓存签到状态
 
 async function renderQuota(el) {
   el.innerHTML = `
     <div class="flex items-center justify-between mb-6">
       <div>
-        <h2 class="text-2xl font-semibold">额度查询</h2>
-        <p class="text-sm text-zinc-500 mt-1">查询各账号额度使用情况，验证默认浏览器伪装是否生效（Pro = 5x quota）</p>
+        <h2 class="text-2xl font-semibold">额度管理</h2>
+        <p class="text-sm text-zinc-500 mt-1">查询额度、管理重置券、签到领奖励</p>
       </div>
-      <button onclick="runQuota()" id="quotaRunBtn" class="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 transition-colors">查询额度</button>
+      <div class="flex gap-2">
+        <button onclick="runQuota()" id="quotaRunBtn" class="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 transition-colors">查询额度</button>
+        <button onclick="runSignIn()" id="signInBtn" class="rounded-lg bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-600 transition-colors">签到</button>
+      </div>
     </div>
-    <div id="quotaResult"></div>`;
+
+    <!-- 功能选项卡 -->
+    <div class="flex gap-1 mb-4 bg-zinc-900 rounded-lg p-1">
+      <button onclick="switchQuotaTab('quota')" id="tab-quota" class="quota-tab flex-1 px-3 py-2 text-sm font-medium rounded-md bg-zinc-700 text-white">额度概览</button>
+      <button onclick="switchQuotaTab('coupons')" id="tab-coupons" class="quota-tab flex-1 px-3 py-2 text-sm font-medium rounded-md text-zinc-400 hover:text-white">重置券</button>
+      <button onclick="switchQuotaTab('sign-in')" id="tab-sign-in" class="quota-tab flex-1 px-3 py-2 text-sm font-medium rounded-md text-zinc-400 hover:text-white">签到</button>
+      <button onclick="switchQuotaTab('records')" id="tab-records" class="quota-tab flex-1 px-3 py-2 text-sm font-medium rounded-md text-zinc-400 hover:text-white">使用记录</button>
+    </div>
+
+    <!-- 内容区域 -->
+    <div id="quotaContent">
+      <div id="quotaResult"></div>
+      <div id="couponsResult" style="display:none"></div>
+      <div id="signInResult" style="display:none"></div>
+      <div id="recordsResult" style="display:none"></div>
+    </div>`;
+
   // 恢复上次结果（切页面不丢失）
   if (lastQuotaResult) renderQuotaResult(lastQuotaResult);
+}
+
+function switchQuotaTab(tab) {
+  // 切换选项卡样式
+  document.querySelectorAll('.quota-tab').forEach(btn => {
+    btn.classList.remove('bg-zinc-700', 'text-white');
+    btn.classList.add('text-zinc-400');
+  });
+  document.getElementById(`tab-${tab}`).classList.remove('text-zinc-400');
+  document.getElementById(`tab-${tab}`).classList.add('bg-zinc-700', 'text-white');
+
+  // 切换内容显示
+  document.getElementById('quotaResult').style.display = tab === 'quota' ? 'block' : 'none';
+  document.getElementById('couponsResult').style.display = tab === 'coupons' ? 'block' : 'none';
+  document.getElementById('signInResult').style.display = tab === 'sign-in' ? 'block' : 'none';
+  document.getElementById('recordsResult').style.display = tab === 'records' ? 'block' : 'none';
+
+  // 加载对应内容
+  if (tab === 'coupons' && !lastCouponsResult) runCoupons();
+  if (tab === 'sign-in' && !lastSignInStatus) runSignInStatus();
+  if (tab === 'records') runRecords();
 }
 
 async function runQuota() {
@@ -1062,6 +1104,228 @@ async function runQuota() {
   } finally {
     btn.disabled = false; btn.textContent = '查询额度';
   }
+}
+
+// ── 重置券管理 ──
+
+async function runCoupons() {
+  const el = document.getElementById('couponsResult');
+  el.innerHTML = '<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-zinc-400">正在查询重置券列表...</p></div>';
+  try {
+    const r = await api('/coupons');
+    lastCouponsResult = r;
+    renderCouponsResult(r);
+  } catch (e) {
+    el.innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">查询失败: ${esc(e.message)}</p></div>`;
+  }
+}
+
+function renderCouponsResult(r) {
+  const el = document.getElementById('couponsResult');
+  if (!r.ok) {
+    el.innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">${esc(r.error || '查询失败')}</p></div>`;
+    return;
+  }
+
+  const coupons = r.coupons?.coupons || [];
+  const tokenInfo = `<div class="text-xs text-zinc-500 mb-3">Token: ${esc(r.token_name || r.token_id)}</div>`;
+
+  if (coupons.length === 0) {
+    el.innerHTML = `${tokenInfo}
+      <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
+        <p class="text-sm text-zinc-400">暂无可用重置券</p>
+        <button onclick="claimCoupon()" class="mt-3 rounded-lg bg-amber-700 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600 transition-colors">领取重置券</button>
+      </div>`;
+    return;
+  }
+
+  const couponList = coupons.map(c => `
+    <div class="flex items-center justify-between p-3 bg-zinc-800 rounded-lg mb-2">
+      <div>
+        <div class="text-sm font-medium text-zinc-200">${esc(c.coupon_name || '周重置券')}</div>
+        <div class="text-xs text-zinc-500">${esc(c.coupon_code)}</div>
+        ${c.valid_start_time && c.valid_end_time ? `<div class="text-xs text-zinc-500 mt-1">有效期: ${esc(c.valid_start_time)} ~ ${esc(c.valid_end_time)}</div>` : ''}
+      </div>
+      <button onclick="useCoupon('${esc(c.coupon_code)}')" class="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600 transition-colors">使用</button>
+    </div>
+  `).join('');
+
+  el.innerHTML = `${tokenInfo}
+    <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
+      <div class="flex items-center justify-between mb-3">
+        <span class="text-sm font-medium text-zinc-200">可用重置券 (${coupons.length} 张)</span>
+        <button onclick="claimCoupon()" class="rounded-lg bg-amber-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-600 transition-colors">领取更多</button>
+      </div>
+      ${couponList}
+    </div>`;
+}
+
+async function claimCoupon() {
+  if (!confirm('确定要领取重置券吗？')) return;
+  try {
+    const r = await api('/coupons/claim', { method: 'POST' });
+    if (r.ok) {
+      alert('领取成功！' + (r.result?.participation_result === 'already_participated' ? '（已领取过）' : ''));
+      runCoupons(); // 刷新列表
+    } else {
+      alert('领取失败: ' + (r.error || '未知错误'));
+    }
+  } catch (e) {
+    alert('领取失败: ' + e.message);
+  }
+}
+
+async function useCoupon(couponCode) {
+  if (!confirm(`确定要使用重置券 ${couponCode} 吗？\n使用后额度将重置为 100%。`)) return;
+  try {
+    const r = await api('/coupons/use?coupon_code=' + encodeURIComponent(couponCode), { method: 'POST' });
+    if (r.ok && r.result?.use_result !== 'failed') {
+      alert('使用成功！额度已重置。');
+      runQuota(); // 刷新额度
+      runCoupons(); // 刷新券列表
+    } else {
+      alert('使用失败: ' + (r.result?.error_message || r.error || '未知错误'));
+    }
+  } catch (e) {
+    alert('使用失败: ' + e.message);
+  }
+}
+
+// ── 签到功能 ──
+
+async function runSignInStatus() {
+  const el = document.getElementById('signInResult');
+  el.innerHTML = '<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-zinc-400">正在查询签到状态...</p></div>';
+  try {
+    const r = await api('/sign-in/status');
+    lastSignInStatus = r;
+    renderSignInResult(r);
+  } catch (e) {
+    el.innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">查询失败: ${esc(e.message)}</p></div>`;
+  }
+}
+
+function renderSignInResult(r) {
+  const el = document.getElementById('signInResult');
+  if (!r.ok) {
+    el.innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">${esc(r.error || '查询失败')}</p></div>`;
+    return;
+  }
+
+  const status = r.status || {};
+  const results = status.results || [];
+  const today = status.sign_in_date || '';
+
+  const tokenInfo = `<div class="text-xs text-zinc-500 mb-3">Token: ${esc(r.token_name || r.token_id)} | 日期: ${esc(today)}</div>`;
+
+  const sceneList = results.map(s => {
+    const signed = s.signed_today;
+    const sceneName = s.scene_code === 'daily_sign_in' ? '每日签到' : s.scene_code === 'desktop_pet' ? '桌面宠物' : s.scene_code;
+    return `
+      <div class="flex items-center justify-between p-3 bg-zinc-800 rounded-lg mb-2">
+        <div>
+          <div class="text-sm font-medium text-zinc-200">${esc(sceneName)}</div>
+          <div class="text-xs text-zinc-500">已签到 ${s.signed_days || 0} 天</div>
+        </div>
+        <span class="text-xs px-2 py-0.5 rounded ${signed ? 'bg-emerald-900/50 text-emerald-300' : 'bg-zinc-700 text-zinc-400'}">
+          ${signed ? '✓ 今日已签' : '未签到'}
+        </span>
+      </div>`;
+  }).join('');
+
+  const allSigned = results.every(s => s.signed_today);
+
+  el.innerHTML = `${tokenInfo}
+    <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
+      <div class="flex items-center justify-between mb-3">
+        <span class="text-sm font-medium text-zinc-200">签到状态</span>
+        ${allSigned
+          ? '<span class="text-xs text-emerald-400">✓ 今日已全部签到</span>'
+          : `<button onclick="runSignIn()" class="rounded-lg bg-blue-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 transition-colors">立即签到</button>`
+        }
+      </div>
+      ${sceneList}
+    </div>`;
+}
+
+async function runSignIn() {
+  const btn = document.getElementById('signInBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '签到中...'; }
+
+  try {
+    const r = await api('/sign-in', { method: 'POST' });
+    if (r.ok) {
+      const results = r.result?.results || [];
+      const successCount = results.filter(s => s.sign_in_result === 'success').length;
+      alert(`签到成功！${successCount} 个场景已签到。`);
+      lastSignInStatus = null; // 清除缓存，强制刷新
+      runSignInStatus();
+    } else {
+      alert('签到失败: ' + (r.error || '未知错误'));
+    }
+  } catch (e) {
+    alert('签到失败: ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '签到'; }
+  }
+}
+
+// ── 使用记录 ──
+
+async function runRecords() {
+  const el = document.getElementById('recordsResult');
+  el.innerHTML = '<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-zinc-400">正在查询使用记录...</p></div>';
+  try {
+    const r = await api('/usage-records');
+    renderRecordsResult(r);
+  } catch (e) {
+    el.innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">查询失败: ${esc(e.message)}</p></div>`;
+  }
+}
+
+function renderRecordsResult(r) {
+  const el = document.getElementById('recordsResult');
+  if (!r.ok) {
+    el.innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">${esc(r.error || '查询失败')}</p></div>`;
+    return;
+  }
+
+  const records = r.records?.records || [];
+  const tokenInfo = `<div class="text-xs text-zinc-500 mb-3">Token: ${esc(r.token_name || r.token_id)}</div>`;
+
+  if (records.length === 0) {
+    el.innerHTML = `${tokenInfo}
+      <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
+        <p class="text-sm text-zinc-400">暂无使用记录</p>
+      </div>`;
+    return;
+  }
+
+  const recordList = records.slice(0, 20).map(rec => {
+    const isIncrease = rec.consume_percentage?.startsWith('+');
+    const color = isIncrease ? 'text-emerald-400' : 'text-red-400';
+    return `
+      <tr class="border-b border-zinc-800">
+        <td class="py-2 text-xs text-zinc-400">${esc(rec.request_time || '-')}</td>
+        <td class="py-2 text-xs text-zinc-300">${esc(rec.scene_group_name_display || rec.scene_group_name || '-')}</td>
+        <td class="py-2 text-xs font-mono ${color}">${esc(rec.consume_percentage || '-')}</td>
+      </tr>`;
+  }).join('');
+
+  el.innerHTML = `${tokenInfo}
+    <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
+      <div class="text-sm font-medium text-zinc-200 mb-3">最近使用记录</div>
+      <table class="w-full">
+        <thead>
+          <tr class="border-b border-zinc-700">
+            <th class="py-2 text-left text-xs text-zinc-500">时间</th>
+            <th class="py-2 text-left text-xs text-zinc-500">功能</th>
+            <th class="py-2 text-left text-xs text-zinc-500">用量</th>
+          </tr>
+        </thead>
+        <tbody>${recordList}</tbody>
+      </table>
+    </div>`;
 }
 
 function renderQuotaResult(r) {
