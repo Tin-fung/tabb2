@@ -885,6 +885,10 @@ class ClaudeSSEWriter:
         self.total_output_tokens = 0
         self.has_tool_call = False
         self.emitted_tool_signatures: set[str] = set()
+        self.tool_call_blocks: dict[str, int] = {}
+        self.tool_call_inputs: dict[str, str] = {}
+        self.pending_tool_names: dict[str, str] = {}
+        self.stopped_tool_call_ids: set[str] = set()
         self.pending_text = ""
         self.suppressed_text = False
 
@@ -1044,8 +1048,110 @@ class ClaudeSSEWriter:
             )
         ]
 
+    def emit_tool_call_delta(
+        self,
+        call_id: str,
+        name: str,
+        arguments_delta: str = "",
+    ) -> list[str]:
+        if not call_id:
+            return []
+        if name:
+            self.pending_tool_names[call_id] = name
+        name = name or self.pending_tool_names.get(call_id, "")
+        if not name:
+            return []
+        self.has_tool_call = True
+        self.pending_text = ""
+        lines = []
+
+        if call_id not in self.tool_call_blocks:
+            if not arguments_delta:
+                return []
+            lines.extend(self._flush_text_block())
+            lines.extend(self._end_thinking_block())
+            idx = self.next_block_index
+            self.next_block_index += 1
+            self.tool_call_blocks[call_id] = idx
+            tool_id = generate_tool_id()
+            lines.append(
+                self._sse(
+                    "content_block_start",
+                    {
+                        "type": "content_block_start",
+                        "index": idx,
+                        "content_block": {
+                            "type": "tool_use",
+                            "id": tool_id,
+                            "name": name,
+                            "input": {},
+                        },
+                    },
+                )
+            )
+
+        if arguments_delta:
+            idx = self.tool_call_blocks[call_id]
+            self.tool_call_inputs[call_id] = self.tool_call_inputs.get(call_id, "") + arguments_delta
+            self.total_output_tokens += estimate_tokens(arguments_delta)
+            lines.append(
+                self._sse(
+                    "content_block_delta",
+                    {
+                        "type": "content_block_delta",
+                        "index": idx,
+                        "delta": {
+                            "type": "input_json_delta",
+                            "partial_json": arguments_delta,
+                        },
+                    },
+                )
+            )
+        return lines
+
+    def _stop_tool_call_block(self, call_id: str) -> list[str]:
+        if call_id in self.stopped_tool_call_ids or call_id not in self.tool_call_blocks:
+            return []
+        self.stopped_tool_call_ids.add(call_id)
+        return [
+            self._sse(
+                "content_block_stop",
+                {
+                    "type": "content_block_stop",
+                    "index": self.tool_call_blocks[call_id],
+                },
+            )
+        ]
+
+    def _stop_open_tool_blocks(self) -> list[str]:
+        lines = []
+        for call_id in list(self.tool_call_blocks):
+            lines.extend(self._stop_tool_call_block(call_id))
+        return lines
+
     def _emit_tool_call(self, call: dict) -> list[str]:
         lines = []
+        call_id = call.get("id")
+        if call_id and call_id in self.tool_call_blocks:
+            input_json = json.dumps(call["arguments"], ensure_ascii=False)
+            already = self.tool_call_inputs.get(call_id, "")
+            if input_json.startswith(already):
+                remaining = input_json[len(already):]
+            elif not already:
+                remaining = input_json
+            else:
+                remaining = ""
+            if remaining:
+                lines.extend(
+                    self.emit_tool_call_delta(
+                        call_id=call_id,
+                        name=call["name"],
+                        arguments_delta=remaining,
+                    )
+                )
+            lines.extend(self._stop_tool_call_block(call_id))
+            return lines
+
         signature = json.dumps(
             {"name": call.get("name"), "arguments": call.get("arguments", {})},
             ensure_ascii=False,
@@ -1113,6 +1219,7 @@ class ClaudeSSEWriter:
         lines.extend(self._flush_pending_text())
         lines.extend(self._flush_text_block())
         lines.extend(self._end_thinking_block())
+        lines.extend(self._stop_open_tool_blocks())
 
         stop_reason = "tool_use" if self.has_tool_call else "end_turn"
         output_tokens = max(1, self.total_output_tokens)

@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Header
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from core.tabbit_client import TabbitClient, resolve_model
+from core.tabbit_client import MODEL_MAP, TabbitClient, resolve_model
 from core.token_manager import TokenManager
 from core.log_store import LogStore, LogEntry
 from core.config import ConfigManager
@@ -22,6 +22,7 @@ from core.claude_compat import (
     build_tool_name_map,
     build_tool_prompt,
     compress_content,
+    estimate_tokens,
     random_trigger_signal,
 )
 
@@ -106,6 +107,7 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
     tools: list[dict] | None = None
     tool_choice: Any = None
+    stream_options: dict | None = None
 
 
 def _normalize_openai_tools(tools: list[dict] | None) -> list[dict]:
@@ -278,30 +280,39 @@ async def _get_client_and_token(
 
 
 class OpenAISSEWriter:
-    def __init__(self, completion_id: str, model: str):
+    def __init__(
+        self,
+        completion_id: str,
+        model: str,
+        input_tokens: int = 0,
+        include_usage: bool = False,
+    ):
         self.completion_id = completion_id
         self.model = model
+        self.created = int(time.time())
+        self.input_tokens = max(1, input_tokens)
+        self.output_tokens = 0
+        self.include_usage = include_usage
         self.has_tool_call = False
         self.finished = False
         self.tool_index = 0
         self.emitted_tool_signatures: set[str] = set()
+        self.started_tool_ids: set[str] = set()
+        self.tool_arg_buffers: dict[str, str] = {}
         self.pending_text = ""
         self.suppressed_text = False
         self.emitted_content = False
 
     def init_event(self) -> str:
-        return self._sse(
-            {
-                "id": self.completion_id,
-                "object": "chat.completion.chunk",
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {"role": "assistant", "content": ""},
-                        "finish_reason": None,
-                    }
-                ],
-            }
+        return self._chunk(
+            [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant"},
+                    "logprobs": None,
+                    "finish_reason": None,
+                }
+            ]
         )
 
     def handle_events(self, events: list[dict]) -> list[str]:
@@ -313,7 +324,7 @@ class OpenAISSEWriter:
             elif etype == "tool_call":
                 self.has_tool_call = True
                 self.pending_text = ""
-                output.extend(self._emit_tool_call(event["call"]))
+                output.extend(self.emit_tool_call_final(event["call"]))
             elif etype == "end":
                 output.extend(self.finish())
         return output
@@ -329,8 +340,7 @@ class OpenAISSEWriter:
             return []
         if self.has_tool_call:
             return []
-        self.pending_text += text
-        return []
+        return [self._content_delta(text)]
 
     def _flush_pending_text(self) -> list[str]:
         if not self.pending_text or self.has_tool_call:
@@ -340,49 +350,112 @@ class OpenAISSEWriter:
         self.pending_text = ""
         return [self._content_delta(text)]
 
-    def _emit_tool_call(self, call: dict) -> list[str]:
+    @staticmethod
+    def _stringify_arguments(args: Any) -> str:
+        if isinstance(args, str):
+            return args
+        return json.dumps(args or {}, ensure_ascii=False)
+
+    def emit_tool_call_delta(
+        self,
+        *,
+        call_id: str,
+        index: int,
+        name: str | None = None,
+        arguments_delta: str | None = None,
+        call_type: str = "function",
+    ) -> list[str]:
+        self.has_tool_call = True
+        self.pending_text = ""
+        call_id = call_id or f"call_{uuid.uuid4().hex}"
+        first_delta = call_id not in self.started_tool_ids
+        self.started_tool_ids.add(call_id)
+        if arguments_delta:
+            self.tool_arg_buffers[call_id] = self.tool_arg_buffers.get(call_id, "") + arguments_delta
+            self.output_tokens += estimate_tokens(arguments_delta)
+
+        function_delta = {}
+        if first_delta and name:
+            function_delta["name"] = name
+        if arguments_delta:
+            function_delta["arguments"] = arguments_delta
+
+        tool_delta = {"index": index, "function": function_delta}
+        if first_delta:
+            tool_delta.update({"id": call_id, "type": call_type})
+
+        if not function_delta and not first_delta:
+            return []
+
+        return [
+            self._chunk(
+                [
+                    {
+                        "index": 0,
+                        "delta": {"tool_calls": [tool_delta]},
+                        "logprobs": None,
+                        "finish_reason": None,
+                    }
+                ]
+            )
+        ]
+
+    def emit_tool_call_final(self, call: dict) -> list[str]:
+        call_id = call.get("id") or f"call_{uuid.uuid4().hex}"
+        idx = call.get("index")
+        if idx is None:
+            idx = self.tool_index
+            self.tool_index += 1
+        name = call.get("name", "")
+        args = self._stringify_arguments(call.get("arguments", {}))
+
+        if call_id in self.started_tool_ids:
+            already = self.tool_arg_buffers.get(call_id, "")
+            remaining = ""
+            if args.startswith(already):
+                remaining = args[len(already):]
+            elif not already:
+                remaining = args
+            if remaining:
+                return self.emit_tool_call_delta(
+                    call_id=call_id,
+                    index=idx,
+                    arguments_delta=remaining,
+                )
+            return []
+
         signature = json.dumps(
-            {"name": call.get("name"), "arguments": call.get("arguments", {})},
+            {"name": name, "arguments": call.get("arguments", {})},
             ensure_ascii=False,
             sort_keys=True,
         )
         if signature in self.emitted_tool_signatures:
-            logger.info("skip duplicate openai tool_call: %s", call.get("name"))
+            logger.info("skip duplicate openai tool_call: %s", name)
             return []
         self.emitted_tool_signatures.add(signature)
+        self.output_tokens += estimate_tokens(args)
 
-        lines = []
-        if self.tool_index == 0:
-            lines.append(self._content_delta("我来处理。\n"))
-        idx = self.tool_index
-        self.tool_index += 1
-        call_id = f"call_{uuid.uuid4().hex}"
-        args = json.dumps(call.get("arguments", {}), ensure_ascii=False)
-        chunk = {
-            "id": self.completion_id,
-            "object": "chat.completion.chunk",
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {
-                        "tool_calls": [
-                            {
-                                "index": idx,
-                                "id": call_id,
-                                "type": "function",
-                                "function": {
-                                    "name": call.get("name", ""),
-                                    "arguments": args,
-                                },
-                            }
-                        ]
-                    },
-                    "finish_reason": None,
-                }
-            ],
-        }
-        lines.append(self._sse(chunk))
-        return lines
+        return [
+            self._chunk(
+                [
+                    {
+                        "index": 0,
+                        "delta": {
+                            "tool_calls": [
+                                {
+                                    "index": idx,
+                                    "id": call_id,
+                                    "type": "function",
+                                    "function": {"name": name, "arguments": args},
+                                }
+                            ]
+                        },
+                        "logprobs": None,
+                        "finish_reason": None,
+                    }
+                ]
+            )
+        ]
 
     def finish(self) -> list[str]:
         if self.finished:
@@ -394,32 +467,63 @@ class OpenAISSEWriter:
         lines.extend(self._flush_pending_text())
         finish_reason = "tool_calls" if self.has_tool_call else "stop"
         lines.append(
-            self._sse(
-                {
-                    "id": self.completion_id,
-                    "object": "chat.completion.chunk",
-                    "choices": [
-                        {"index": 0, "delta": {}, "finish_reason": finish_reason}
-                    ],
-                }
+            self._chunk(
+                [
+                    {
+                        "index": 0,
+                        "delta": {},
+                        "logprobs": None,
+                        "finish_reason": finish_reason,
+                    }
+                ]
             )
         )
+        if self.include_usage:
+            lines.append(self.usage_event())
         return lines
 
     def _content_delta(self, text: str) -> str:
         if text:
             self.emitted_content = True
+            self.output_tokens += estimate_tokens(text)
+        return self._chunk(
+            [
+                {
+                    "index": 0,
+                    "delta": {"content": text},
+                    "logprobs": None,
+                    "finish_reason": None,
+                }
+            ]
+        )
+
+    def usage_event(self) -> str:
+        usage = {
+            "prompt_tokens": self.input_tokens,
+            "completion_tokens": max(1, self.output_tokens),
+            "total_tokens": self.input_tokens + max(1, self.output_tokens),
+        }
         return self._sse(
             {
                 "id": self.completion_id,
                 "object": "chat.completion.chunk",
-                "choices": [
-                    {
-                        "index": 0,
-                        "delta": {"content": text},
-                        "finish_reason": None,
-                    }
-                ],
+                "created": self.created,
+                "model": self.model,
+                "system_fingerprint": None,
+                "choices": [],
+                "usage": usage,
+            }
+        )
+
+    def _chunk(self, choices: list[dict]) -> str:
+        return self._sse(
+            {
+                "id": self.completion_id,
+                "object": "chat.completion.chunk",
+                "created": self.created,
+                "model": self.model,
+                "system_fingerprint": None,
+                "choices": choices,
             }
         )
 
@@ -527,6 +631,55 @@ def _filter_tool_events(
     return filtered
 
 
+def _estimate_openai_input_tokens(messages: list[ChatMessage], tools: list[dict] | None) -> int:
+    text = "\n".join(m.text_content() for m in messages)
+    if tools:
+        text += "\n" + json.dumps(tools, ensure_ascii=False)
+    return estimate_tokens(text)
+
+
+def _include_stream_usage(req: ChatCompletionRequest) -> bool:
+    opts = req.stream_options or {}
+    return bool(isinstance(opts, dict) and opts.get("include_usage"))
+
+
+def _parse_tool_delta_event(ed: dict, name_map: dict[str, str] | None) -> dict | None:
+    tool_call = ed.get("tool_call") if isinstance(ed.get("tool_call"), dict) else ed
+    fn = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+    alias_name = (
+        ed.get("tool_call_name")
+        or fn.get("name")
+        or tool_call.get("name")
+        or ""
+    )
+    if name_map and alias_name and alias_name not in name_map:
+        return None
+    name = (name_map or {}).get(alias_name, alias_name)
+    arguments_delta = fn.get("arguments")
+    if arguments_delta is None:
+        arguments_delta = ed.get("arguments")
+    if arguments_delta is not None and not isinstance(arguments_delta, str):
+        arguments_delta = json.dumps(arguments_delta, ensure_ascii=False)
+
+    try:
+        index = int(ed.get("index", 0))
+    except Exception:
+        index = 0
+    call_id = (
+        ed.get("tool_call_id")
+        or ed.get("id")
+        or tool_call.get("id")
+        or f"call_{uuid.uuid4().hex}"
+    )
+    return {
+        "id": call_id,
+        "index": index,
+        "name": name,
+        "arguments_delta": arguments_delta or "",
+        "type": ed.get("type") or tool_call.get("type") or "function",
+    }
+
+
 def _resolve_model_name(model: str) -> str:
     registry = get_registry()
     if registry and registry.ready:
@@ -560,10 +713,17 @@ async def _stream_handler(
     trigger_signal: str | None = None,
     name_map: dict[str, str] | None = None,
     tools: list[dict] | None = None,
+    input_tokens: int = 0,
+    include_usage: bool = False,
 ):
     start = time.time()
     error_msg = ""
-    writer = OpenAISSEWriter(completion_id, req_model)
+    writer = OpenAISSEWriter(
+        completion_id,
+        req_model,
+        input_tokens=input_tokens,
+        include_usage=include_usage,
+    )
     required = _required_by_name(tools or [])
     properties = _properties_by_name(tools or [])
 
@@ -582,12 +742,23 @@ async def _stream_handler(
                 else:
                     for line in writer.handle_events([{"type": "text", "content": text}]):
                         yield line
+            elif et == "message_tool_call_delta":
+                delta = _parse_tool_delta_event(ed, name_map or {})
+                if delta:
+                    for line in writer.emit_tool_call_delta(
+                        call_id=delta["id"],
+                        index=delta["index"],
+                        name=delta["name"],
+                        arguments_delta=delta["arguments_delta"],
+                        call_type=delta["type"],
+                    ):
+                        yield line
             elif et == "message_tool_calls":
                 parser.flush_text()
                 events = _filter_tool_events(parser.consume_events(), required, properties)
                 for line in writer.handle_events(events):
                     yield line
-                for tc in ed.get("tool_calls", []):
+                for idx, tc in enumerate(ed.get("tool_calls", [])):
                     fn = tc.get("function", {})
                     alias_name = fn.get("name", "")
                     if name_map and alias_name not in name_map:
@@ -598,7 +769,17 @@ async def _stream_handler(
                     except Exception:
                         args = {}
                     events = _filter_tool_events(
-                        [{"type": "tool_call", "call": {"name": orig_name, "arguments": args}}],
+                        [
+                            {
+                                "type": "tool_call",
+                                "call": {
+                                    "id": tc.get("id"),
+                                    "index": tc.get("index", idx),
+                                    "name": orig_name,
+                                    "arguments": args,
+                                },
+                            }
+                        ],
                         required,
                         properties,
                     )
@@ -672,6 +853,7 @@ async def chat_completions(
         trigger_signal=trigger_signal,
         name_map=name_map,
     )
+    input_tokens = _estimate_openai_input_tokens(req.messages, tools)
 
     try:
         session_id = await client.create_chat_session()
@@ -707,6 +889,8 @@ async def chat_completions(
                 trigger_signal=trigger_signal,
                 name_map=name_map,
                 tools=tools,
+                input_tokens=input_tokens,
+                include_usage=_include_stream_usage(req),
             ),
             media_type="text/event-stream",
         )
@@ -749,7 +933,7 @@ async def chat_completions(
                 for ev in _filter_tool_events(parser.consume_events(), required, properties):
                     if ev.get("type") == "text":
                         full_text += ev.get("content", "")
-                for tc in ed.get("tool_calls", []):
+                for idx, tc in enumerate(ed.get("tool_calls", [])):
                     fn = tc.get("function", {})
                     alias_name = fn.get("name", "")
                     if name_map and alias_name not in name_map:
@@ -768,7 +952,7 @@ async def chat_completions(
                         call = ev["call"]
                         tool_calls.append(
                             {
-                                "id": f"call_{uuid.uuid4().hex}",
+                                "id": tc.get("id") or f"call_{uuid.uuid4().hex}",
                                 "type": "function",
                                 "function": {
                                     "name": call.get("name", ""),
@@ -832,31 +1016,36 @@ async def chat_completions(
                 "finish_reason": finish_reason,
             }
         ],
+        "usage": {
+            "prompt_tokens": input_tokens,
+            "completion_tokens": estimate_tokens(full_text),
+            "total_tokens": input_tokens + estimate_tokens(full_text),
+        },
+        "system_fingerprint": None,
     }
 
 
 @router.get("/v1/models")
 async def list_models():
-    """返回动态拉取的模型清单。
+    """返回动态拉取的模型清单，注册表挂时用落盘快照兜底。
 
-    registry 不可用时返回 503，绝不 fallback 静态 MODEL_MAP——
-    后者是过时清单（含 best/glm-5 等旧 id），会让第三方平台缓存到
-    错误模型列表。正确做法是让上游感知失败，由管理 UI 刷新。
+    优先级：动态缓存（TTL 1h）→ 快照（上次成功拉取的清单）→ 503。
+    快照是真实拉取过的清单，不是手维护的静态 MODEL_MAP，不会引入过时 id。
+    上游全挂 + 无快照（首次启动从未拉到过）才返回 503。
     """
     registry = get_registry()
+    # registry 不可用：先尝试刷新（含快照兜底），再判断
     if not registry or not registry.ready:
-        # 后台触发一次刷新（不阻塞响应），下次请求可能就绪
         if registry:
-            asyncio.create_task(registry.refresh_with_retry(retries=1))
-        raise HTTPException(
-            status_code=503,
-            detail="model registry not ready (upstream fetch failed). "
-                   "Refresh in admin UI: Settings → Models → Refresh.",
-        )
-    models = registry.list_models()
-    if not models:
-        raise HTTPException(
-            status_code=503,
-            detail="model registry empty. Refresh in admin UI.",
-        )
-    return {"object": "list", "data": models}
+            # 同步触发一次刷新：成功则就绪，全挂则 refresh_with_retry 内部会读快照
+            await registry.refresh_with_retry(retries=1)
+    if registry and registry.ready:
+        models = registry.list_models()
+        if models:
+            return {"object": "list", "data": models}
+    # 动态 + 快照都拿不到，才 503
+    raise HTTPException(
+        status_code=503,
+        detail="model registry not ready (upstream fetch failed and no snapshot). "
+               "Refresh in admin UI: Settings → Models → Refresh.",
+    )

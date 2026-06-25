@@ -317,3 +317,54 @@ export ANTHROPIC_MODEL=DeepSeek-V4-Pro
 
 - DeepSeek-V4-Pro 偶尔会在文本里输出工具协议残片（如 `</invoke>` 或 DSML tool marker）。目前不影响工具执行，但可以后续做文本层过滤。
 - 上游仍可能偶发调 `browser_task_tool` 等 Tabbit 原生工具；proxy 只转发 `cc_` 别名工具，原生工具会被忽略。
+
+---
+
+## ✅ 2026-06-25 原生 API 拟真度增强
+
+### 改动目标
+
+此前代理已能完成 Claude Code / OpenCode 工具闭环，但 streaming 仍偏“能用型转译”：上游 `message_tool_call_delta` 没有消费，OpenAI chunk 缺 `created/model/system_fingerprint/logprobs` 等常见字段，`stream_options.include_usage` 也没有返回 usage chunk。
+
+本轮改动目标是让代理更接近上游大模型原生 API 行为，而不是只在最终结果上兼容。
+
+### 已补齐
+
+1. **默认 auto 探测 v2 chat completion**
+   - `TabbitClient.send_message()` 默认先尝试 `/api/v2/chat/completion`
+   - 自动带 `client_turn_id`、`stream_mode: "sse"`、`force_execute: false`
+   - v2 在未产生任何 SSE 事件前若返回 400/404/405/422，则自动退回 v1，并在当前 `TabbitClient` 上缓存降级，避免后续请求反复 404
+
+2. **工具调用增量事件**
+   - Claude 路径新增 `message_tool_call_delta → content_block_start/input_json_delta`
+   - OpenAI 路径新增 `message_tool_call_delta → delta.tool_calls[].function.arguments`
+   - 最终 `message_tool_calls` 到达时只补剩余参数并关闭 Claude content block，避免重复工具参数
+
+3. **OpenAI streaming 拟真字段**
+   - chunk 增加 `created`、`model`、`system_fingerprint: null`、`logprobs: null`
+   - 支持 `stream_options.include_usage`
+   - 非流式响应补 `usage` 与 `system_fingerprint`
+
+4. **文本 streaming 更及时**
+   - OpenAI 普通文本事件到达即输出 `delta.content`
+   - 工具协议场景仍由 `ToolifyParser` 控制，避免半截 `<invoke>` 泄露给客户端
+
+### 仍需观察
+
+- 如果上游 delta 参数与最终 `message_tool_calls.function.arguments` 不是严格前缀关系，proxy 会优先避免重复输出，可能保留已收到的增量参数而不做修正。
+- v2 当前在部分上游域会返回 404；已有 v1 自动 fallback 与缓存降级，但 492/493 等业务错误不会 fallback。
+- 附件/图片要继续提升原生效果，下一步应走 Tabbit native reference/upload，而不是把内容压成文本。
+
+### Live smoke 结果
+
+2026-06-25 用 `DeepSeek-V4-Pro` 跑了真实上游 smoke：
+
+- `scripts/verify_api_fidelity.py` 通过：
+  - health ok，模型注册表 ready
+  - direct `TabbitClient.send_message()` 可完成真实上游请求
+  - OpenAI streaming chunk 字段与 `stream_options.include_usage` 正常
+  - Claude streaming `message_start/content_block/message_delta/message_stop` 顺序正常
+- 当前 `web.tabbit.ai` 的 `/api/v2/chat/completion` 返回 404；`auto` 模式会 fallback 到 v1，并在当前 client 缓存降级，后续请求不再重复打 v2。
+- focused live guard 通过：`calculate` / `write_file` 这类带 required 参数的工具不会再因为上游 name-only 或 `{}` delta 提前产生空参 `tool_use`。
+- `scripts/verify_tool_loop.py --model DeepSeek-V4-Pro` 不适合继续当强门禁：模型有时会重复写/读或吐 Claude Code 风格 `Write`/`Read` 别名。脚本已补 `Write`/`Read`/`LS` 执行别名，但完整多轮结果仍受模型策略波动影响。
+- 发现并修复 name-only / empty-args tool delta：上游可能先发工具名、参数为空，甚至发 `{}`。Claude writer 现在先缓存 name-only delta；Claude route 对带 required 字段的工具会累积 JSON，直到 required 参数齐全才开启 `tool_use` block，避免客户端执行 `{}` 空参工具。

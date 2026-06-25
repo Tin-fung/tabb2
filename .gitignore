@@ -16,3 +16,6 @@ config.json
 logs/capture_agent.log
 logs/*.log
 !logs/capture_agent_evidence.log
+
+# probe/verify 脚本运行时产出的 JSON 结果（脚本自动写，非源码）
+logs/*.json

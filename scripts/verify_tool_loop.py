@@ -25,6 +25,11 @@ MAX_ROUNDS = 5
 # 模拟的工具实现（Claude Code 真实工具的简化版）
 def execute_tool(name: str, arguments: dict) -> str:
     """本地执行工具，返回结果字符串（模拟 Claude Code 跑工具）"""
+    name = {
+        "Write": "write_file",
+        "Read": "read_file",
+        "LS": "list_dir",
+    }.get(name, name)
     if name == "write_file":
         path = arguments.get("file_path", "/tmp/unknown")
         content = arguments.get("content", "")
