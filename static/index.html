@@ -1035,8 +1035,13 @@ function renderDiagResult(r) {
 let lastQuotaResult = null; // 缓存额度结果，切页面后恢复
 let lastCouponsResult = null; // 缓存重置券结果
 let lastSignInStatus = null; // 缓存签到状态
+let availableTokens = []; // 可用账号列表
+let selectedTokenId = ''; // 当前选中的账号 ID
 
 async function renderQuota(el) {
+  // 先加载账号列表
+  await loadTokens();
+
   el.innerHTML = `
     <div class="flex items-center justify-between mb-6">
       <div>
@@ -1046,6 +1051,18 @@ async function renderQuota(el) {
       <div class="flex gap-2">
         <button onclick="runQuota()" id="quotaRunBtn" class="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 transition-colors">查询额度</button>
         <button onclick="runSignIn()" id="signInBtn" class="rounded-lg bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-600 transition-colors">签到</button>
+      </div>
+    </div>
+
+    <!-- 账号选择器 -->
+    <div class="mb-4 p-4 bg-zinc-900 rounded-lg">
+      <div class="flex items-center gap-4">
+        <label class="text-sm text-zinc-400">当前账号：</label>
+        <select id="tokenSelector" onchange="onTokenChange(this.value)" class="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-emerald-500">
+          <option value="">全部账号</option>
+          ${availableTokens.map(t => `<option value="${t.id}" ${t.id === selectedTokenId ? 'selected' : ''}>${esc(t.name || t.id)}</option>`).join('')}
+        </select>
+        <button onclick="loadTokens()" class="rounded-lg bg-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-600 transition-colors">刷新</button>
       </div>
     </div>
 
@@ -1067,6 +1084,41 @@ async function renderQuota(el) {
 
   // 恢复上次结果（切页面不丢失）
   if (lastQuotaResult) renderQuotaResult(lastQuotaResult);
+}
+
+async function loadTokens() {
+  try {
+    const r = await api('/tokens');
+    if (r.tokens) {
+      availableTokens = r.tokens.filter(t => t.enabled);
+      // 如果没有选中的 token，默认选第一个
+      if (!selectedTokenId && availableTokens.length > 0) {
+        selectedTokenId = availableTokens[0].id;
+      }
+      // 更新下拉框
+      const selector = document.getElementById('tokenSelector');
+      if (selector) {
+        selector.innerHTML = `<option value="">全部账号</option>
+          ${availableTokens.map(t => `<option value="${t.id}" ${t.id === selectedTokenId ? 'selected' : ''}>${esc(t.name || t.id)}</option>`).join('')}`;
+      }
+    }
+  } catch (e) {
+    console.error('加载账号列表失败:', e);
+  }
+}
+
+function onTokenChange(tokenId) {
+  selectedTokenId = tokenId;
+  // 清除缓存，强制刷新当前页面
+  lastQuotaResult = null;
+  lastCouponsResult = null;
+  lastSignInStatus = null;
+  // 刷新当前选项卡的内容
+  const activeTab = document.querySelector('.quota-tab.bg-zinc-700');
+  if (activeTab) {
+    const tabName = activeTab.id.replace('tab-', '');
+    switchQuotaTab(tabName);
+  }
 }
 
 function switchQuotaTab(tab) {
@@ -1094,9 +1146,10 @@ async function runQuota() {
   const btn = document.getElementById('quotaRunBtn');
   const el = document.getElementById('quotaResult');
   btn.disabled = true; btn.textContent = '查询中...';
-  el.innerHTML = '<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-zinc-400">正在查询各账号额度（unique-uuid 带默认浏览器标记，后端按 Pro 发权益）...</p></div>';
+  el.innerHTML = '<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-zinc-400">正在查询额度...</p></div>';
   try {
-    const r = await api('/quota');
+    const params = selectedTokenId ? `?token_id=${selectedTokenId}` : '';
+    const r = await api('/quota' + params);
     lastQuotaResult = r;
     renderQuotaResult(r);
   } catch (e) {
@@ -1112,7 +1165,8 @@ async function runCoupons() {
   const el = document.getElementById('couponsResult');
   el.innerHTML = '<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-zinc-400">正在查询重置券列表...</p></div>';
   try {
-    const r = await api('/coupons');
+    const params = selectedTokenId ? `?token_id=${selectedTokenId}` : '';
+    const r = await api('/coupons' + params);
     lastCouponsResult = r;
     renderCouponsResult(r);
   } catch (e) {
@@ -1163,7 +1217,8 @@ function renderCouponsResult(r) {
 async function claimCoupon() {
   if (!confirm('确定要领取重置券吗？')) return;
   try {
-    const r = await api('/coupons/claim', { method: 'POST' });
+    const params = selectedTokenId ? `?token_id=${selectedTokenId}` : '';
+    const r = await api('/coupons/claim' + params, { method: 'POST' });
     if (r.ok) {
       alert('领取成功！' + (r.result?.participation_result === 'already_participated' ? '（已领取过）' : ''));
       runCoupons(); // 刷新列表
@@ -1178,7 +1233,9 @@ async function claimCoupon() {
 async function useCoupon(couponCode) {
   if (!confirm(`确定要使用重置券 ${couponCode} 吗？\n使用后额度将重置为 100%。`)) return;
   try {
-    const r = await api('/coupons/use?coupon_code=' + encodeURIComponent(couponCode), { method: 'POST' });
+    let params = `?coupon_code=${encodeURIComponent(couponCode)}`;
+    if (selectedTokenId) params += `&token_id=${selectedTokenId}`;
+    const r = await api('/coupons/use' + params, { method: 'POST' });
     if (r.ok && r.result?.use_result !== 'failed') {
       alert('使用成功！额度已重置。');
       runQuota(); // 刷新额度
@@ -1197,7 +1254,8 @@ async function runSignInStatus() {
   const el = document.getElementById('signInResult');
   el.innerHTML = '<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-zinc-400">正在查询签到状态...</p></div>';
   try {
-    const r = await api('/sign-in/status');
+    const params = selectedTokenId ? `?token_id=${selectedTokenId}` : '';
+    const r = await api('/sign-in/status' + params);
     lastSignInStatus = r;
     renderSignInResult(r);
   } catch (e) {
@@ -1253,7 +1311,8 @@ async function runSignIn() {
   if (btn) { btn.disabled = true; btn.textContent = '签到中...'; }
 
   try {
-    const r = await api('/sign-in', { method: 'POST' });
+    const params = selectedTokenId ? `?token_id=${selectedTokenId}` : '';
+    const r = await api('/sign-in' + params, { method: 'POST' });
     if (r.ok) {
       const results = r.result?.results || [];
       const successCount = results.filter(s => s.sign_in_result === 'success').length;
@@ -1276,7 +1335,8 @@ async function runRecords() {
   const el = document.getElementById('recordsResult');
   el.innerHTML = '<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-zinc-400">正在查询使用记录...</p></div>';
   try {
-    const r = await api('/usage-records');
+    const params = selectedTokenId ? `?token_id=${selectedTokenId}` : '';
+    const r = await api('/usage-records' + params);
     renderRecordsResult(r);
   } catch (e) {
     el.innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">查询失败: ${esc(e.message)}</p></div>`;
