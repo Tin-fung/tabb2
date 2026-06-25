@@ -601,10 +601,12 @@ async function renderSettings(el) {
   let models = [];
   let modelsReady = false;
   let modelsError = null;
+  let snapshot = {from_snapshot: false, snapshot_age: -1, snapshot_count: 0};
   try {
     const m = await api('/models');
     models = m.models || [];
     modelsReady = !!m.ready;
+    snapshot = m.snapshot || snapshot;
   } catch (e) {
     // /models 返回 503 时 m 为空，记录错误供 UI 提示
     modelsError = e.message || '上游拉取失败';
@@ -674,15 +676,23 @@ async function renderSettings(el) {
         <div class="px-5 py-4 border-b border-zinc-800 flex items-center justify-between">
           <div class="flex items-center gap-2">
             <h3 class="text-sm font-medium text-zinc-300">模型清单</h3>
-            <span class="text-xs ${modelsReady ? 'text-emerald-400' : 'text-amber-400'}">${modelsReady ? '动态拉取 · 已缓存' : '动态拉取 · 未就绪'}</span>
+            <span class="text-xs ${modelsReady ? (snapshot.from_snapshot ? 'text-amber-400' : 'text-emerald-400') : 'text-amber-400'}">${modelsReady ? (snapshot.from_snapshot ? '快照兜底 · 上游不可达' : '动态拉取 · 已缓存') : '动态拉取 · 未就绪'}</span>
           </div>
           <button onclick="refreshModelsInSettings()" class="rounded-lg border border-zinc-700 px-3 py-1 text-xs hover:bg-zinc-800 transition-colors">刷新</button>
         </div>
-        ${(!modelsReady || modelsError) ? `
+        ${snapshot.from_snapshot ? `
         <div class="px-5 py-3 bg-amber-950/40 border-b border-amber-900/50 flex items-center justify-between gap-3">
           <div class="flex items-center gap-2 text-sm text-amber-300">
             <span>⚠️</span>
-            <span>模型清单未就绪${modelsError ? '：' + esc(modelsError) : ''}。第三方平台此时拉取会拿到 503，不会缓存到过时模型 id。点右侧"刷新"重新拉取。</span>
+            <span>上游拉取失败，当前展示的是快照兜底清单（${snapshot.snapshot_count} 个模型，${snapshot.snapshot_age >= 0 ? Math.round(snapshot.snapshot_age/60) + ' 分钟前' : '未知时间'}保存）。第三方平台拉取仍可正常拿到模型列表，不会 503。点右侧"刷新"重试上游。</span>
+          </div>
+          <button onclick="refreshModelsInSettings()" class="shrink-0 rounded-lg bg-amber-700 hover:bg-amber-600 px-3 py-1.5 text-xs text-white transition-colors">立即刷新</button>
+        </div>` : ''}
+        ${(!modelsReady && !snapshot.from_snapshot) ? `
+        <div class="px-5 py-3 bg-amber-950/40 border-b border-amber-900/50 flex items-center justify-between gap-3">
+          <div class="flex items-center gap-2 text-sm text-amber-300">
+            <span>⚠️</span>
+            <span>模型清单未就绪${modelsError ? '：' + esc(modelsError) : ''}，且无快照可兜底（首次启动从未拉取成功）。第三方平台此时拉取会拿到 503，不会缓存到过时模型 id。点右侧"刷新"重新拉取。</span>
           </div>
           <button onclick="refreshModelsInSettings()" class="shrink-0 rounded-lg bg-amber-700 hover:bg-amber-600 px-3 py-1.5 text-xs text-white transition-colors">立即刷新</button>
         </div>` : ''}
@@ -721,7 +731,7 @@ async function renderSettings(el) {
           <select id="sClaudeModel" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100">
             ${selectOpts}
           </select>
-          <p class="text-xs ${models.length ? 'text-zinc-500' : 'text-amber-400'} mt-1">${models.length ? `动态拉取 ${models.length} 个模型` : '⚠️ 模型清单未就绪，请先点上方"刷新"'}</p>
+          <p class="text-xs ${models.length ? (snapshot.from_snapshot ? 'text-amber-400' : 'text-zinc-500') : 'text-amber-400'} mt-1">${models.length ? (snapshot.from_snapshot ? `快照兜底 ${models.length} 个模型（上游不可达）` : `动态拉取 ${models.length} 个模型`) : '⚠️ 模型清单未就绪，请先点上方"刷新"'}</p>
         </div>
         <div class="rounded-lg bg-zinc-800/50 border border-zinc-700/50 p-4">
           <p class="text-xs text-zinc-400 mb-2 font-medium">Claude Code 连接配置</p>
@@ -805,7 +815,11 @@ async function refreshModelsInSettings() {
   try {
     const r = await api('/models/refresh', { method: 'POST' });
     await renderSettings(document.getElementById('pageContent'));
-    if (!r.ok) alert('刷新失败：上游拉取未成功，请稍后重试');
+    if (!r.ok) {
+      const snap = r.snapshot || {};
+      if (snap.from_snapshot) alert('上游拉取未成功，已用快照兜底（' + snap.snapshot_count + ' 个模型，' + (snap.snapshot_age >= 0 ? Math.round(snap.snapshot_age/60) + ' 分钟前' : '未知时间') + '保存）。/v1/models 仍可正常返回，不会 503。');
+      else alert('刷新失败：上游拉取未成功，且无快照可兜底，请稍后重试');
+    }
   } catch (e) { alert('刷新失败: ' + e.message); }
   finally { if (btn) { btn.disabled = false; btn.textContent = '刷新'; } }
 }

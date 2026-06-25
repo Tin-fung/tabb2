@@ -328,7 +328,7 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
                 registry.update_token(first)
         ok = await registry.refresh(force=True)
         models = registry.list_models() if ok else []
-        return {"ok": ok, "count": len(models), "models": models}
+        return {"ok": ok, "count": len(models), "models": models, "snapshot": registry.snapshot_info}
 
     @r.get("/models", dependencies=[Depends(admin_dep)])
     async def admin_list_models():
@@ -336,11 +336,12 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
         from core.model_registry import get_registry
         registry = get_registry()
         if not registry:
-            return {"ready": False, "models": []}
+            return {"ready": False, "models": [], "snapshot": {"from_snapshot": False, "snapshot_age": -1, "snapshot_count": 0}}
         return {
             "ready": registry.ready,
             "count": len(registry.list_models()),
             "models": registry.list_models(),
+            "snapshot": registry.snapshot_info,
         }
 
     # ── Password ──

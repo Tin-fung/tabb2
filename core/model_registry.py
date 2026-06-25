@@ -1,9 +1,12 @@
 """动态模型注册表
 
 启动时从 Tabbit 上游拉取真实模型清单，构建 alias → selected_model 映射，
-带缓存与 TTL。
+带缓存与 TTL。每次成功拉取落盘快照（data/models_snapshot.json），
+注册表全挂时读快照兜底，不再直接 503。
 
 相比硬编码 MODEL_MAP 的好处：Tabbit 升级模型不用改代码。
+快照兜底的好处：上游不可达时仍能返回上次真实拉取的清单，
+且新模型上线后下次刷新自动进快照，无需手维护静态列表。
 
 关键发现（cmp_models.py 验证）:
 - /proxy/v1/model_config/models 是最新清单（含 GLM-5.1/GPT-5.5 等新模型）
@@ -14,6 +17,8 @@
 import asyncio
 import time
 import logging
+import json
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -26,6 +31,9 @@ MODEL_CACHE_TTL = 3600
 # 避免每请求都重打上游。期间后台可重试刷新。
 STALE_CACHE_GRACE = 300
 
+# 快照落盘路径：每次成功拉取写这里，全挂时读这里兜底
+SNAPSHOT_PATH = Path(__file__).resolve().parent.parent / "data" / "models_snapshot.json"
+
 
 async def _async_sleep(seconds: float) -> None:
     await asyncio.sleep(seconds)
@@ -37,13 +45,17 @@ MODELS_API_PATH = "/proxy/v1/model_config/models?a=0"
 class ModelRegistry:
     """模型注册表：动态拉取 + 缓存 + fallback"""
 
-    def __init__(self, base_url: str = "https://web.tabbit.ai", verify_ssl: bool = False, token_str: str | None = None):
+    def __init__(self, base_url: str = "https://web.tabbit.ai", verify_ssl: bool = False, token_str: str | None = None, snapshot_path: str | Path | None = None):
         self.base_url = base_url
         self.verify_ssl = verify_ssl
         self._token_str = token_str  # 认证 token（JWT|NEXT_AUTH|DEVICE_ID 格式）
         self._cache: Optional[dict] = None  # {alias: selected_model}
         self._models_meta: Optional[list] = None  # 完整模型元信息
         self._expires_at: float = 0
+        # 快照路径：可注入（测试用），默认 data/models_snapshot.json
+        self._snapshot_path = Path(snapshot_path) if snapshot_path else SNAPSHOT_PATH
+        # 标记当前内存数据是否来自快照（用于日志区分动态 vs 快照兜底）
+        self._from_snapshot: bool = False
 
     def _build_alias_map(self, models: list) -> tuple[dict, list]:
         """从上游模型列表构建 alias → selected_model 映射
@@ -96,6 +108,73 @@ class ModelRegistry:
         """更新认证 token（运行时添加新 token 后调用）"""
         self._token_str = token_str
 
+    def _save_snapshot(self) -> None:
+        """把当前 models_meta 落盘成快照。
+
+        每次成功拉取上游后调用。快照是上次真实拉取的清单，
+        上游不可达时读它兜底，避免 /v1/models 直接 503。
+        写失败只记日志，不影响主流程（快照是 best-effort 优化）。
+        """
+        if not self._models_meta:
+            return
+        try:
+            self._snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "saved_at": time.time(),
+                "models_meta": self._models_meta,
+            }
+            tmp = self._snapshot_path.with_suffix(self._snapshot_path.suffix + ".tmp")
+            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            tmp.replace(self._snapshot_path)  # 原子替换，避免半写
+            logger.info("model snapshot saved: %d models -> %s",
+                        len(self._models_meta), self._snapshot_path)
+        except Exception as e:
+            logger.warning("model snapshot save failed: %s", e)
+
+    def _load_snapshot(self) -> bool:
+        """从盘读快照填充内存缓存，成功返回 True。
+
+        仅在动态拉取全挂且无内存缓存时调用。快照没有 TTL（它就是兜底），
+        但 _from_snapshot 标记会让 ready 检查走宽限窗逻辑。
+        """
+        try:
+            if not self._snapshot_path.exists():
+                return False
+            payload = json.loads(self._snapshot_path.read_text(encoding="utf-8"))
+            models_meta = payload.get("models_meta") if isinstance(payload, dict) else None
+            if not isinstance(models_meta, list) or not models_meta:
+                return False
+            # 从 models_meta 反建 alias_map（meta 已含 selected_model）
+            alias_map: dict = {}
+            for m in models_meta:
+                display = m.get("display_name", "") or ""
+                name = m.get("id", "") or ""
+                selected = m.get("selected_model") or display or name
+                if display:
+                    alias_map[display.lower().replace(" ", "")] = selected
+                    alias_map[display] = selected
+                if name:
+                    alias_map[name.lower()] = selected
+                    alias_map[name] = selected
+                if display in ("Default", "最佳") or name == "best-model":
+                    alias_map["best"] = selected
+                    alias_map["default"] = selected
+                    alias_map["默认"] = selected
+                    alias_map["最佳"] = selected
+            self._cache = alias_map
+            self._models_meta = models_meta
+            self._from_snapshot = True
+            # 快照兜底也设宽限窗，期间后台可重试拉动态
+            self._expires_at = time.time() + STALE_CACHE_GRACE
+            saved_at = payload.get("saved_at")
+            age = int(time.time() - saved_at) if isinstance(saved_at, (int, float)) else -1
+            logger.warning("model registry using snapshot fallback: %d models (age %ss)",
+                           len(models_meta), age)
+            return True
+        except Exception as e:
+            logger.warning("model snapshot load failed: %s", e)
+            return False
+
     async def refresh(self, force: bool = False) -> bool:
         """拉取最新模型清单，成功返回 True。
 
@@ -113,6 +192,9 @@ class ModelRegistry:
                            len(self._models_meta or []))
             self._expires_at = time.time() + STALE_CACHE_GRACE
             return True
+        # 无内存缓存，读快照兜底
+        if self._load_snapshot():
+            return True
         return False
 
     async def refresh_with_retry(self, retries: int = 2, delay: float = 1.5) -> bool:
@@ -127,6 +209,9 @@ class ModelRegistry:
         # 全部失败：若有旧缓存兜住，否则返回 False
         if self._cache:
             self._expires_at = time.time() + STALE_CACHE_GRACE
+            return True
+        # 无内存缓存，最后试一次读快照兜底——上游全挂时仍能返回上次真实清单
+        if self._load_snapshot():
             return True
         return False
 
@@ -179,8 +264,10 @@ class ModelRegistry:
             self._cache = alias_map
             self._models_meta = models_meta
             self._expires_at = time.time() + MODEL_CACHE_TTL
+            self._from_snapshot = False
             logger.info("model registry refreshed: %d models, %d aliases",
                         len(models_meta), len(alias_map))
+            self._save_snapshot()  # 落盘最新清单，供下次全挂时兜底
             return True
         except Exception as e:
             logger.warning("model registry refresh error: %s", e)
@@ -220,6 +307,28 @@ class ModelRegistry:
     @property
     def ready(self) -> bool:
         return self._cache is not None and time.time() < self._expires_at
+
+    @property
+    def snapshot_info(self) -> dict:
+        """快照状态信息，供 admin UI 提示用。
+
+        from_snapshot: 当前内存数据是否来自快照兜底（True=上游全挂在读快照）
+        snapshot_age:  落盘快照距今秒数（-1=无快照文件）
+        snapshot_count: 落盘快照模型数（0=无快照文件）
+        """
+        info = {"from_snapshot": self._from_snapshot, "snapshot_age": -1, "snapshot_count": 0}
+        try:
+            if self._snapshot_path.exists():
+                payload = json.loads(self._snapshot_path.read_text(encoding="utf-8"))
+                saved_at = payload.get("saved_at") if isinstance(payload, dict) else None
+                meta = payload.get("models_meta") if isinstance(payload, dict) else None
+                if isinstance(saved_at, (int, float)):
+                    info["snapshot_age"] = int(time.time() - saved_at)
+                if isinstance(meta, list):
+                    info["snapshot_count"] = len(meta)
+        except Exception:
+            pass
+        return info
 
 
 # 全局单例

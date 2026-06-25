@@ -8,6 +8,7 @@ import random
 import secrets
 import logging
 import urllib.parse
+from contextlib import suppress
 from email.utils import parsedate_to_datetime
 from typing import AsyncGenerator
 
@@ -154,6 +155,9 @@ class TabbitClient:
         # 默认浏览器标记：编进 unique-uuid 第 5 位，后端据此发 Pro 会员权益
         # 移植自 web 端 eN(isDefault) 算法。设 True 即让后端按默认浏览器用户对待。
         self.default_browser = default_browser
+        # v2 是当前前端发现的更原生入口，但部分上游域/账号会返回 404。
+        # 首次失败后缓存降级到 v1，避免每轮多打一枪。
+        self._chat_completion_api_version = "v2"
         # 服务器时间偏移（秒）：server_time = local_time + _server_time_offset
         # 从上游响应 Date 头惰性同步，规避 vps 本地时钟漂移导致时间戳位校验失败。
         # 初始 0（未同步），首次请求后校正。
@@ -529,32 +533,145 @@ class TabbitClient:
     async def send_message(
         self, session_id: str, content: str, model: str,
         references: list | None = None, task_name: str = "chat",
+        api_version: str = "auto", force_execute: bool = False,
+        client_turn_id: str | None = None, agent_mode: bool = False,
+        parallel_group_id: str | None = None, metadatas: dict | None = None,
     ) -> AsyncGenerator[dict, None]:
         """向会话发送消息，流式返回上游 SSE 事件
 
-        真实 endpoint: POST /api/v1/chat/completion（抓包确认）
+        真实 endpoint: POST /api/v1|v2/chat/completion（抓包确认）
         x-req-ctx 头是版本校验关键，缺则 493。
 
         references: 超长内容分流通道。网关只校验 content 主字段(≤20421)，
             references[].content 不受限制（实测模型可读到 7万+字符）。
             传非空 list 即启用分流，绕过 2万字符天花板。
         task_name: "chat"(默认) / "script"。分流时仍用 chat 保持语义。
+        api_version: 默认 auto，优先尝试 v2 并带 client_turn_id/stream_mode；
+            如果 v2 入口不可用且尚未产生任何 SSE 事件，会自动退回 v1 并缓存降级。
         """
+        primary_version = self._chat_completion_api_version if api_version == "auto" else api_version
+        versions = [primary_version]
+        if primary_version == "v2":
+            versions.append("v1")
+
+        last_error: Exception | None = None
+        for version in versions:
+            yielded = False
+            stream = self._stream_chat_completion(
+                session_id=session_id,
+                content=content,
+                model=model,
+                references=references,
+                task_name=task_name,
+                api_version=version,
+                force_execute=force_execute,
+                client_turn_id=client_turn_id,
+                agent_mode=agent_mode,
+                parallel_group_id=parallel_group_id,
+                metadatas=metadatas,
+            )
+            try:
+                async for event in stream:
+                    yielded = True
+                    yield event
+                return
+            except Exception as e:
+                last_error = e
+                if (
+                    version == "v2"
+                    and not yielded
+                    and self._should_retry_completion_with_v1(e)
+                ):
+                    self._chat_completion_api_version = "v1"
+                    logger.warning("v2 chat completion failed before stream; fallback to v1: %s", e)
+                    continue
+                raise
+            finally:
+                with suppress(Exception):
+                    await stream.aclose()
+
+        if last_error:
+            raise last_error
+
+    def _build_chat_completion_payload(
+        self,
+        session_id: str,
+        content: str,
+        model: str,
+        references: list | None,
+        task_name: str,
+        api_version: str,
+        force_execute: bool,
+        client_turn_id: str | None,
+        agent_mode: bool,
+        parallel_group_id: str | None,
+        metadatas: dict | None,
+    ) -> dict:
         payload = {
             "chat_session_id": session_id,
             "message_id": None,
             "content": content,
             "selected_model": model,
-            "parallel_group_id": None,
+            "parallel_group_id": parallel_group_id,
             "task_name": task_name,
-            "agent_mode": False,
-            "metadatas": {"html_content": f"<p>{content}</p>"},
+            "agent_mode": agent_mode,
+            "metadatas": metadatas or {"html_content": f"<p>{content}</p>"},
             "references": references or [],
             "entity": {
                 "key": hashlib.md5(b"").hexdigest(),
                 "extras": {"type": "tab", "url": ""},
             },
         }
+        if api_version == "v2":
+            payload.update(
+                {
+                    "client_turn_id": client_turn_id or str(uuid.uuid4()),
+                    "stream_mode": "sse",
+                    "force_execute": force_execute,
+                }
+            )
+        return payload
+
+    @staticmethod
+    def _should_retry_completion_with_v1(error: Exception) -> bool:
+        msg = str(error)
+        return any(
+            marker in msg
+            for marker in (
+                "Tabbit API error 400",
+                "Tabbit API error 404",
+                "Tabbit API error 405",
+                "Tabbit API error 422",
+            )
+        )
+
+    async def _stream_chat_completion(
+        self,
+        session_id: str,
+        content: str,
+        model: str,
+        references: list | None,
+        task_name: str,
+        api_version: str,
+        force_execute: bool,
+        client_turn_id: str | None,
+        agent_mode: bool,
+        parallel_group_id: str | None,
+        metadatas: dict | None,
+    ) -> AsyncGenerator[dict, None]:
+        payload = self._build_chat_completion_payload(
+            session_id=session_id,
+            content=content,
+            model=model,
+            references=references,
+            task_name=task_name,
+            api_version=api_version,
+            force_execute=force_execute,
+            client_turn_id=client_turn_id,
+            agent_mode=agent_mode,
+            parallel_group_id=parallel_group_id,
+            metadatas=metadatas,
+        )
 
         headers = {
             **self._get_headers(f"/session/{session_id}", with_uuid=True),
@@ -564,7 +681,7 @@ class TabbitClient:
 
         async with self.client.stream(
             "POST",
-            f"{self.base_url}/api/v1/chat/completion",
+            f"{self.base_url}/api/{api_version}/chat/completion",
             json=payload,
             headers=headers,
             cookies=self._get_cookies(),

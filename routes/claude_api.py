@@ -149,6 +149,72 @@ def _estimate_input_tokens(body: dict) -> int:
     return estimate_tokens(total_text)
 
 
+def _parse_tool_delta_event(
+    ed: dict,
+    name_map: dict[str, str],
+    pending_aliases: dict[str, str],
+) -> dict | None:
+    tool_call = ed.get("tool_call") if isinstance(ed.get("tool_call"), dict) else ed
+    fn = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+    call_id = ed.get("tool_call_id") or ed.get("id") or tool_call.get("id") or f"call_{uuid.uuid4().hex}"
+    raw_alias_name = (
+        ed.get("tool_call_name")
+        or fn.get("name")
+        or tool_call.get("name")
+        or ""
+    )
+    if raw_alias_name and raw_alias_name in name_map:
+        pending_aliases[call_id] = raw_alias_name
+    alias_name = raw_alias_name or pending_aliases.get(call_id, "")
+    if not alias_name or alias_name not in name_map:
+        return None
+
+    arguments_delta = fn.get("arguments")
+    if arguments_delta is None:
+        arguments_delta = ed.get("arguments")
+    if arguments_delta is not None and not isinstance(arguments_delta, str):
+        arguments_delta = json.dumps(arguments_delta, ensure_ascii=False)
+
+    return {
+        "id": call_id,
+        "name": name_map.get(alias_name, alias_name),
+        "arguments_delta": arguments_delta or "",
+    }
+
+
+def _releasable_arguments_delta(
+    delta: dict,
+    required_by_name: dict[str, set[str]],
+    pending_args: dict[str, str],
+) -> str | None:
+    """Return the delta safe to emit to Claude clients.
+
+    Anthropic clients execute a tool block once it stops. If upstream sends a
+    name-only or "{}" delta for a tool with required fields, emitting it early
+    creates an invalid local tool call. For required tools, hold deltas until
+    the cumulative JSON parses and contains every required field.
+    """
+    required = required_by_name.get(delta["name"], set())
+    if not required:
+        return delta["arguments_delta"]
+
+    call_id = delta["id"]
+    pending_args[call_id] = pending_args.get(call_id, "") + delta["arguments_delta"]
+    try:
+        parsed = json.loads(pending_args[call_id] or "{}")
+    except Exception:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    missing = [
+        key for key in required
+        if key not in parsed or parsed.get(key) in (None, "")
+    ]
+    if missing:
+        return None
+    return pending_args.pop(call_id)
+
+
 async def _stream_claude_response(
     client: TabbitClient,
     session_id: str,
@@ -206,6 +272,8 @@ async def _stream_claude_response(
         return [ev for ev in events if _valid_tool_event(ev)]
 
     parser = ToolifyParser(trigger_signal, thinking_enabled, name_map=name_map)
+    pending_delta_aliases: dict[str, str] = {}
+    pending_delta_args: dict[str, str] = {}
 
     # message_start
     yield writer.init_event()
@@ -226,6 +294,22 @@ async def _stream_claude_response(
                     if events:
                         for line in writer.handle_events(events):
                             yield line
+            elif et == "message_tool_call_delta":
+                delta = _parse_tool_delta_event(ed, name_map, pending_delta_aliases)
+                if delta:
+                    arguments_delta = _releasable_arguments_delta(
+                        delta,
+                        required_by_name,
+                        pending_delta_args,
+                    )
+                    if arguments_delta is None:
+                        continue
+                    for line in writer.emit_tool_call_delta(
+                        call_id=delta["id"],
+                        name=delta["name"],
+                        arguments_delta=arguments_delta,
+                    ):
+                        yield line
             elif et == "message_tool_calls":
                 # 上游原生工具调用通道：Tabbit 服务端把工具调用强制走此事件，
                 # 不走 <<CALL>> 文本协议（实测：模型调 cc_Write 时大多走这条）。
@@ -260,7 +344,7 @@ async def _stream_claude_response(
                                 orig_name, ",".join(missing), list(args.keys()),
                             )
                             continue
-                        for line in writer.handle_events([{"type": "tool_call", "call": {"name": orig_name, "arguments": args}}]):
+                        for line in writer.handle_events([{"type": "tool_call", "call": {"id": tc.get("id"), "name": orig_name, "arguments": args}}]):
                             yield line
                         logger.info("native tool_calls → tool_use: %s", orig_name)
             elif et == "finish":
