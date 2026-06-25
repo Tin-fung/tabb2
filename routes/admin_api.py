@@ -462,6 +462,280 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
                 await client.client.aclose()
         return {"ok": True, "results": results}
 
+    # ── 重置券列表查询 ──
+    @r.get("/coupons", dependencies=[Depends(admin_dep)])
+    async def query_coupons(token_id: Optional[str] = None, coupon_type: str = "weekly_reset_coupon", status: int = 1):
+        """查询可用重置券列表。
+
+        不传 token_id：查第一个 enabled token 的重置券。
+        传 token_id：查指定 token 的重置券。
+        """
+        tokens = _cfg.get("tokens", default=[]) or []
+        if token_id:
+            targets = [t for t in tokens if t["id"] == token_id]
+            if not targets:
+                raise HTTPException(status_code=404, detail="token not found")
+        else:
+            targets = [t for t in tokens if t.get("enabled", True)]
+
+        if not targets:
+            return {"ok": False, "error": "无可用 token", "results": []}
+
+        t = targets[0]
+        client = TabbitClient(
+            t["value"],
+            _cfg.get("tabbit", "base_url"),
+            _cfg.get("tabbit", "client_id"),
+            _cfg.get("tabbit", "browser_version"),
+            _cfg.get("tabbit", "sparkle_version"),
+            _cfg.get("tabbit", "default_browser", default=True),
+        )
+        try:
+            coupons = await client.get_coupon_list(coupon_type=coupon_type, status=status)
+            return {"ok": True, "token_id": t["id"], "token_name": t.get("name", ""), "coupons": coupons}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        finally:
+            await client.client.aclose()
+
+    # ── 领取重置券（参与活动）──
+    @r.post("/coupons/claim", dependencies=[Depends(admin_dep)])
+    async def claim_coupon(token_id: Optional[str] = None):
+        """参与活动领取重置券。
+
+        不传 token_id：用第一个 enabled token 领取。
+        传 token_id：用指定 token 领取。
+        """
+        tokens = _cfg.get("tokens", default=[]) or []
+        if token_id:
+            targets = [t for t in tokens if t["id"] == token_id]
+            if not targets:
+                raise HTTPException(status_code=404, detail="token not found")
+        else:
+            targets = [t for t in tokens if t.get("enabled", True)]
+
+        if not targets:
+            return {"ok": False, "error": "无可用 token"}
+
+        t = targets[0]
+        client = TabbitClient(
+            t["value"],
+            _cfg.get("tabbit", "base_url"),
+            _cfg.get("tabbit", "client_id"),
+            _cfg.get("tabbit", "browser_version"),
+            _cfg.get("tabbit", "sparkle_version"),
+            _cfg.get("tabbit", "default_browser", default=True),
+        )
+        try:
+            result = await client.participate_activity()
+            return {"ok": True, "token_id": t["id"], "token_name": t.get("name", ""), "result": result}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        finally:
+            await client.client.aclose()
+
+    # ── 使用重置券 ──
+    @r.post("/coupons/use", dependencies=[Depends(admin_dep)])
+    async def use_coupon_endpoint(coupon_code: str, token_id: Optional[str] = None):
+        """使用指定的重置券。
+
+        coupon_code: 优惠券码（从 /coupons 接口获取）
+        """
+        tokens = _cfg.get("tokens", default=[]) or []
+        if token_id:
+            targets = [t for t in tokens if t["id"] == token_id]
+            if not targets:
+                raise HTTPException(status_code=404, detail="token not found")
+        else:
+            targets = [t for t in tokens if t.get("enabled", True)]
+
+        if not targets:
+            return {"ok": False, "error": "无可用 token"}
+
+        t = targets[0]
+        client = TabbitClient(
+            t["value"],
+            _cfg.get("tabbit", "base_url"),
+            _cfg.get("tabbit", "client_id"),
+            _cfg.get("tabbit", "browser_version"),
+            _cfg.get("tabbit", "sparkle_version"),
+            _cfg.get("tabbit", "default_browser", default=True),
+        )
+        try:
+            result = await client.use_coupon(coupon_code)
+            return {"ok": True, "token_id": t["id"], "token_name": t.get("name", ""), "result": result}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        finally:
+            await client.client.aclose()
+
+    # ── 重置券商品信息 ──
+    @r.get("/coupons/sku", dependencies=[Depends(admin_dep)])
+    async def get_coupon_sku():
+        """获取重置券商品信息（价格等）。"""
+        tokens = _cfg.get("tokens", default=[]) or []
+        targets = [t for t in tokens if t.get("enabled", True)]
+
+        if not targets:
+            return {"ok": False, "error": "无可用 token"}
+
+        t = targets[0]
+        client = TabbitClient(
+            t["value"],
+            _cfg.get("tabbit", "base_url"),
+            _cfg.get("tabbit", "client_id"),
+            _cfg.get("tabbit", "browser_version"),
+            _cfg.get("tabbit", "sparkle_version"),
+            _cfg.get("tabbit", "default_browser", default=True),
+        )
+        try:
+            sku = await client.get_reset_coupon_sku()
+            return {"ok": True, "sku": sku}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        finally:
+            await client.client.aclose()
+
+    # ── 签到状态查询 ──
+    @r.get("/sign-in/status", dependencies=[Depends(admin_dep)])
+    async def get_sign_in_status_endpoint(token_id: Optional[str] = None):
+        """查询签到状态。"""
+        tokens = _cfg.get("tokens", default=[]) or []
+        if token_id:
+            targets = [t for t in tokens if t["id"] == token_id]
+            if not targets:
+                raise HTTPException(status_code=404, detail="token not found")
+        else:
+            targets = [t for t in tokens if t.get("enabled", True)]
+
+        if not targets:
+            return {"ok": False, "error": "无可用 token"}
+
+        t = targets[0]
+        client = TabbitClient(
+            t["value"],
+            _cfg.get("tabbit", "base_url"),
+            _cfg.get("tabbit", "client_id"),
+            _cfg.get("tabbit", "browser_version"),
+            _cfg.get("tabbit", "sparkle_version"),
+            _cfg.get("tabbit", "default_browser", default=True),
+        )
+        try:
+            status = await client.get_sign_in_status()
+            return {"ok": True, "token_id": t["id"], "token_name": t.get("name", ""), "status": status}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        finally:
+            await client.client.aclose()
+
+    # ── 执行签到 ──
+    @r.post("/sign-in", dependencies=[Depends(admin_dep)])
+    async def sign_in_endpoint(token_id: Optional[str] = None):
+        """执行每日签到，可获得用量奖励。"""
+        tokens = _cfg.get("tokens", default=[]) or []
+        if token_id:
+            targets = [t for t in tokens if t["id"] == token_id]
+            if not targets:
+                raise HTTPException(status_code=404, detail="token not found")
+        else:
+            targets = [t for t in tokens if t.get("enabled", True)]
+
+        if not targets:
+            return {"ok": False, "error": "无可用 token"}
+
+        t = targets[0]
+        client = TabbitClient(
+            t["value"],
+            _cfg.get("tabbit", "base_url"),
+            _cfg.get("tabbit", "client_id"),
+            _cfg.get("tabbit", "browser_version"),
+            _cfg.get("tabbit", "sparkle_version"),
+            _cfg.get("tabbit", "default_browser", default=True),
+        )
+        try:
+            result = await client.sign_in()
+            return {"ok": True, "token_id": t["id"], "token_name": t.get("name", ""), "result": result}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        finally:
+            await client.client.aclose()
+
+    # ── 额度池详情查询 ──
+    @r.get("/quota/pools", dependencies=[Depends(admin_dep)])
+    async def query_quota_pools(token_id: Optional[str] = None):
+        """查询额度池详情。"""
+        tokens = _cfg.get("tokens", default=[]) or []
+        if token_id:
+            targets = [t for t in tokens if t["id"] == token_id]
+            if not targets:
+                raise HTTPException(status_code=404, detail="token not found")
+        else:
+            targets = [t for t in tokens if t.get("enabled", True)]
+
+        if not targets:
+            return {"ok": False, "error": "无可用 token", "results": []}
+
+        results = []
+        for t in targets:
+            client = TabbitClient(
+                t["value"],
+                _cfg.get("tabbit", "base_url"),
+                _cfg.get("tabbit", "client_id"),
+                _cfg.get("tabbit", "browser_version"),
+                _cfg.get("tabbit", "sparkle_version"),
+                _cfg.get("tabbit", "default_browser", default=True),
+            )
+            try:
+                pools = await client.get_quota_pools()
+                results.append({
+                    "token_id": t["id"],
+                    "token_name": t.get("name", ""),
+                    "ok": True,
+                    "pools": pools,
+                })
+            except Exception as e:
+                results.append({
+                    "token_id": t["id"],
+                    "token_name": t.get("name", ""),
+                    "ok": False,
+                    "error": str(e),
+                })
+            finally:
+                await client.client.aclose()
+        return {"ok": True, "results": results}
+
+    # ── 使用记录查询 ──
+    @r.get("/usage-records", dependencies=[Depends(admin_dep)])
+    async def query_usage_records(token_id: Optional[str] = None, page: int = 1, limit: int = 50):
+        """查询额度使用记录。"""
+        tokens = _cfg.get("tokens", default=[]) or []
+        if token_id:
+            targets = [t for t in tokens if t["id"] == token_id]
+            if not targets:
+                raise HTTPException(status_code=404, detail="token not found")
+        else:
+            targets = [t for t in tokens if t.get("enabled", True)]
+
+        if not targets:
+            return {"ok": False, "error": "无可用 token", "results": []}
+
+        t = targets[0]
+        client = TabbitClient(
+            t["value"],
+            _cfg.get("tabbit", "base_url"),
+            _cfg.get("tabbit", "client_id"),
+            _cfg.get("tabbit", "browser_version"),
+            _cfg.get("tabbit", "sparkle_version"),
+            _cfg.get("tabbit", "default_browser", default=True),
+        )
+        try:
+            records = await client.get_usage_records(page=page, limit=limit)
+            return {"ok": True, "token_id": t["id"], "token_name": t.get("name", ""), "records": records}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+        finally:
+            await client.client.aclose()
+
     # ── 诊断（深度健康检查，固化 493/492 排查经验）──
 
     @r.get("/diagnose", dependencies=[Depends(admin_dep)])

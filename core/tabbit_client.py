@@ -242,6 +242,222 @@ class TabbitClient:
             raise Exception(f"quota query failed: {resp.status_code} {resp.text[:200]}")
         return resp.json()
 
+    async def get_quota_pools(self, cycle_offset: int = 0) -> dict:
+        """查询额度池详情。
+
+        /api/commerce/quota/v1/pools 返回额度池的详细信息，包括总配额、剩余配额、已用配额等。
+        """
+        headers = self._get_headers("/member/usage", with_uuid=False)
+        resp = await self.client.get(
+            f"{self.base_url}/api/commerce/quota/v1/pools",
+            params={"user_id": self.user_id, "cycle_offset": cycle_offset},
+            headers=headers,
+            cookies=self._get_cookies(),
+        )
+        self._sync_server_time(resp)
+        if resp.status_code != 200:
+            raise Exception(f"quota pools query failed: {resp.status_code} {resp.text[:200]}")
+        return resp.json()
+
+    async def get_usage_records(self, scene_names: list[str] | None = None, page: int = 1, limit: int = 100) -> dict:
+        """查询额度使用记录。
+
+        /api/commerce/quota/v1/usage-records 返回额度使用记录列表。
+        """
+        if scene_names is None:
+            scene_names = ["chat", "agent"]
+        headers = self._get_headers("/member/usage", with_uuid=False)
+        params = [
+            ("user_id", self.user_id),
+            ("page", str(page)),
+            ("limit", str(limit)),
+            ("timezone", "Asia/Shanghai"),
+        ]
+        for name in scene_names:
+            params.append(("scene_name", name))
+        resp = await self.client.get(
+            f"{self.base_url}/api/commerce/quota/v1/usage-records",
+            params=params,
+            headers=headers,
+            cookies=self._get_cookies(),
+        )
+        self._sync_server_time(resp)
+        if resp.status_code != 200:
+            raise Exception(f"usage records query failed: {resp.status_code} {resp.text[:200]}")
+        return resp.json()
+
+    async def get_coupon_list(self, coupon_type: str = "weekly_reset_coupon", status: int = 1, offset: int = 0, limit: int = 50) -> dict:
+        """查询可用重置券列表。
+
+        /api/commerce/benefit/v1/coupon/list 返回可用的重置券列表。
+        coupon_type: 优惠券类型，默认为 weekly_reset_coupon（周重置券）
+        status: 优惠券状态，1=可用
+        """
+        headers = self._get_headers("/member/usage", with_uuid=False)
+        params = {
+            "user_id": self.user_id,
+            "coupon_type": coupon_type,
+            "offset": offset,
+            "limit": limit,
+        }
+        if status is not None:
+            params["user_coupon_status"] = status
+        resp = await self.client.get(
+            f"{self.base_url}/api/commerce/benefit/v1/coupon/list",
+            params=params,
+            headers=headers,
+            cookies=self._get_cookies(),
+        )
+        self._sync_server_time(resp)
+        if resp.status_code != 200:
+            raise Exception(f"coupon list query failed: {resp.status_code} {resp.text[:200]}")
+        return resp.json()
+
+    async def participate_activity(self, request_no: str | None = None) -> dict:
+        """参与活动领取重置券。
+
+        /api/commerce/activity/v1/participate 参与活动领取重置券。
+        返回 participation_result: "success" | "already_participated" | "ACTIVITY_NOT_OPEN"
+        """
+        if request_no is None:
+            request_no = f"claim_{int(time.time())}_{secrets.token_hex(4)}"
+        headers = self._get_headers("/member/usage", with_uuid=False)
+        headers["Content-Type"] = "application/json"
+        resp = await self.client.post(
+            f"{self.base_url}/api/commerce/activity/v1/participate",
+            json={"user_id": self.user_id, "request_no": request_no},
+            headers=headers,
+            cookies=self._get_cookies(),
+        )
+        self._sync_server_time(resp)
+        if resp.status_code != 200:
+            raise Exception(f"participate activity failed: {resp.status_code} {resp.text[:200]}")
+        return resp.json()
+
+    async def use_coupon(self, coupon_code: str, request_no: str | None = None) -> dict:
+        """使用重置券。
+
+        /api/commerce/benefit/v1/coupon/use 使用指定的重置券。
+        返回 use_result: "success" | "failed"
+        """
+        if request_no is None:
+            request_no = f"req_{int(time.time())}_{secrets.token_hex(4)}"
+        headers = self._get_headers("/member/usage", with_uuid=False)
+        headers["Content-Type"] = "application/json"
+        resp = await self.client.post(
+            f"{self.base_url}/api/commerce/benefit/v1/coupon/use",
+            json={
+                "user_id": self.user_id,
+                "coupon_code": coupon_code,
+                "coupon_type": "weekly_reset_coupon",
+                "request_no": request_no,
+            },
+            headers=headers,
+            cookies=self._get_cookies(),
+        )
+        self._sync_server_time(resp)
+        if resp.status_code != 200:
+            raise Exception(f"use coupon failed: {resp.status_code} {resp.text[:200]}")
+        return resp.json()
+
+    async def get_reset_coupon_sku(self) -> dict:
+        """获取重置券商品信息。
+
+        /api/commerce/product/v1/sku/usage-reset-coupon 返回重置券的商品信息，包括价格等。
+        """
+        headers = self._get_headers("/member/usage", with_uuid=False)
+        resp = await self.client.get(
+            f"{self.base_url}/api/commerce/product/v1/sku/usage-reset-coupon",
+            headers=headers,
+            cookies=self._get_cookies(),
+        )
+        self._sync_server_time(resp)
+        if resp.status_code != 200:
+            raise Exception(f"reset coupon sku query failed: {resp.status_code} {resp.text[:200]}")
+        return resp.json()
+
+    async def create_product_checkout_session(self, product_sku_id: str, request_no: str | None = None) -> dict:
+        """创建产品支付会话（用于购买重置券）。
+
+        /api/commerce/payment/v1/product-checkout-sessions 创建支付会话，返回 checkoutUrl。
+        """
+        if request_no is None:
+            request_no = f"coupon_{int(time.time())}_{secrets.token_hex(4)}"
+        headers = self._get_headers("/member/usage", with_uuid=False)
+        headers["Content-Type"] = "application/json"
+        resp = await self.client.post(
+            f"{self.base_url}/api/commerce/payment/v1/product-checkout-sessions",
+            json={
+                "user_id": self.user_id,
+                "product_sku_id": product_sku_id,
+                "request_no": request_no,
+            },
+            headers=headers,
+            cookies=self._get_cookies(),
+        )
+        self._sync_server_time(resp)
+        if resp.status_code != 200:
+            raise Exception(f"create checkout session failed: {resp.status_code} {resp.text[:200]}")
+        return resp.json()
+
+    async def get_order_status(self, order_no: str) -> dict:
+        """查询订单状态。
+
+        /api/commerce/payment/v1/orders/{order_no} 查询订单支付状态。
+        """
+        headers = self._get_headers("/member/usage", with_uuid=False)
+        resp = await self.client.get(
+            f"{self.base_url}/api/commerce/payment/v1/orders/{order_no}",
+            params={"user_id": self.user_id},
+            headers=headers,
+            cookies=self._get_cookies(),
+        )
+        self._sync_server_time(resp)
+        if resp.status_code != 200:
+            raise Exception(f"order status query failed: {resp.status_code} {resp.text[:200]}")
+        return resp.json()
+
+    async def get_sign_in_status(self) -> dict:
+        """查询签到状态。
+
+        /api/commerce/activity/v1/sign-in/status 查询每日签到状态。
+        """
+        headers = self._get_headers("/member/usage", with_uuid=False)
+        resp = await self.client.get(
+            f"{self.base_url}/api/commerce/activity/v1/sign-in/status",
+            params={"scene_codes": ["daily_sign_in", "desktop_pet"]},
+            headers=headers,
+            cookies=self._get_cookies(),
+        )
+        self._sync_server_time(resp)
+        if resp.status_code != 200:
+            raise Exception(f"sign-in status query failed: {resp.status_code} {resp.text[:200]}")
+        return resp.json()
+
+    async def sign_in(self, request_no: str | None = None) -> dict:
+        """执行签到。
+
+        /api/commerce/activity/v1/sign-in 执行每日签到，可获得用量奖励。
+        """
+        if request_no is None:
+            request_no = f"sign_{int(time.time())}_{secrets.token_hex(4)}"
+        headers = self._get_headers("/member/usage", with_uuid=False)
+        headers["Content-Type"] = "application/json"
+        resp = await self.client.post(
+            f"{self.base_url}/api/commerce/activity/v1/sign-in",
+            json={
+                "request_no": request_no,
+                "scene_codes": ["daily_sign_in", "desktop_pet"],
+                "usage_percentage": "0%",  # 会被服务端忽略
+            },
+            headers=headers,
+            cookies=self._get_cookies(),
+        )
+        self._sync_server_time(resp)
+        if resp.status_code != 200:
+            raise Exception(f"sign-in failed: {resp.status_code} {resp.text[:200]}")
+        return resp.json()
+
     async def send_message(
         self, session_id: str, content: str, model: str,
         references: list | None = None, task_name: str = "chat",
