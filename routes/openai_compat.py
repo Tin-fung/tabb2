@@ -287,6 +287,7 @@ class OpenAISSEWriter:
         self.emitted_tool_signatures: set[str] = set()
         self.pending_text = ""
         self.suppressed_text = False
+        self.emitted_content = False
 
     def init_event(self) -> str:
         return self._sse(
@@ -406,6 +407,8 @@ class OpenAISSEWriter:
         return lines
 
     def _content_delta(self, text: str) -> str:
+        if text:
+            self.emitted_content = True
         return self._sse(
             {
                 "id": self.completion_id,
@@ -423,6 +426,14 @@ class OpenAISSEWriter:
     @staticmethod
     def _sse(data: dict) -> str:
         return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    def has_pending_or_emitted_output(self) -> bool:
+        return bool(
+            self.has_tool_call
+            or self.pending_text
+            or self.emitted_content
+            or self.suppressed_text
+        )
 
 
 def _required_by_name(tools: list[dict]) -> dict[str, set[str]]:
@@ -473,6 +484,17 @@ def _repair_arguments(name: str, args: dict, properties_by_name: dict[str, set[s
     return repaired
 
 
+def _repair_tool_name(name: str, properties_by_name: dict[str, set[str]]) -> str:
+    if name in properties_by_name:
+        return name
+    lower = (name or "").lower()
+    for existing in properties_by_name:
+        if existing.lower() == lower:
+            logger.info("repair openai tool name: %s -> %s", name, existing)
+            return existing
+    return name
+
+
 def _filter_tool_events(
     events: list[dict],
     required_by_name: dict[str, set[str]],
@@ -484,7 +506,8 @@ def _filter_tool_events(
             filtered.append(ev)
             continue
         call = ev.get("call") or {}
-        name = call.get("name", "")
+        name = _repair_tool_name(call.get("name", ""), properties_by_name)
+        call["name"] = name
         args = _repair_arguments(name, call.get("arguments") or {}, properties_by_name)
         call["arguments"] = args
         ev["call"] = call
@@ -502,6 +525,25 @@ def _filter_tool_events(
             continue
         filtered.append(ev)
     return filtered
+
+
+def _resolve_model_name(model: str) -> str:
+    registry = get_registry()
+    if registry and registry.ready:
+        return registry.resolve(model)
+    return MODEL_MAP.get(model.lower(), model)
+
+
+def _tool_fallback_model(requested_tabbit_model: str) -> str | None:
+    """工具请求空回时的兜底模型。"""
+    fallback = None
+    if _cfg:
+        fallback = _cfg.get("claude", "default_model") or _cfg.get("proxy", "default_model")
+    fallback = fallback or "DeepSeek-V4-Pro"
+    fallback_model = _resolve_model_name(fallback)
+    if fallback_model == requested_tabbit_model:
+        return None
+    return fallback_model
 
 
 async def _stream_handler(
@@ -524,11 +566,10 @@ async def _stream_handler(
     writer = OpenAISSEWriter(completion_id, req_model)
     required = _required_by_name(tools or [])
     properties = _properties_by_name(tools or [])
-    parser = ToolifyParser(trigger_signal, False, name_map=name_map or {})
-    try:
-        yield writer.init_event()
 
-        async for event in client.send_message(session_id, content, tabbit_model, references=references, task_name=task_name):
+    async def run_attempt(attempt_session_id: str, attempt_model: str):
+        parser = ToolifyParser(trigger_signal, False, name_map=name_map or {})
+        async for event in client.send_message(attempt_session_id, content, attempt_model, references=references, task_name=task_name):
             et, ed = event["event"], event["data"]
             if et == "message_chunk" and "content" in ed:
                 text = ed["content"]
@@ -570,7 +611,27 @@ async def _stream_handler(
 
         parser.finish()
         events = _filter_tool_events(parser.consume_events(), required, properties)
+        events = [ev for ev in events if ev.get("type") != "end"]
         for line in writer.handle_events(events):
+            yield line
+
+    try:
+        yield writer.init_event()
+
+        async for line in run_attempt(session_id, tabbit_model):
+            yield line
+        if tools and not writer.has_pending_or_emitted_output():
+            fallback_model = _tool_fallback_model(tabbit_model)
+            if fallback_model:
+                logger.info(
+                    "openai tool empty response; retry with fallback model: %s -> %s",
+                    tabbit_model,
+                    fallback_model,
+                )
+                fallback_session_id = await client.create_chat_session()
+                async for line in run_attempt(fallback_session_id, fallback_model):
+                    yield line
+        for line in writer.handle_events([{"type": "end"}]):
             yield line
         yield "data: [DONE]\n\n"
         if token_id:

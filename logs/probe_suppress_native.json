@@ -1,0 +1,151 @@
+{
+  "timestamp": "2026-06-23T14:25:58Z",
+  "results": [
+    {
+      "ok": true,
+      "verdict": "✅用你的协议",
+      "text_len": 284,
+      "text_head": "I'll help you with both requests. Let me make both tool calls simultaneously.  <<CALL_62a120>> <invoke name=\"calc_add\"> ",
+      "native_tools": [],
+      "has_trigger": true,
+      "error_code": null,
+      "desc": "基线：chat+agent_false+协议在前",
+      "params": {
+        "model": "DeepSeek-V4-Pro",
+        "task_name": "chat",
+        "agent_mode": false,
+        "variant": "start"
+      }
+    },
+    {
+      "ok": true,
+      "verdict": "✅用你的协议",
+      "text_len": 316,
+      "text_head": "  I'll help you with both tasks. Let me start by calculating the sum and searching your local knowledge base.  <<CALL_17",
+      "native_tools": [],
+      "has_trigger": true,
+      "error_code": null,
+      "desc": "task_name=script",
+      "params": {
+        "model": "DeepSeek-V4-Pro",
+        "task_name": "script",
+        "agent_mode": false,
+        "variant": "start"
+      }
+    },
+    {
+      "ok": true,
+      "verdict": "❌空回复",
+      "text_len": 0,
+      "text_head": "",
+      "native_tools": [],
+      "has_trigger": false,
+      "error_code": null,
+      "desc": "agent_mode=true",
+      "params": {
+        "model": "DeepSeek-V4-Pro",
+        "task_name": "chat",
+        "agent_mode": true,
+        "variant": "start"
+      }
+    },
+    {
+      "ok": true,
+      "verdict": "✅用你的协议",
+      "text_len": 387,
+      "text_head": "Let me process both requests. First, let me calculate 12345 + 67890 and search for \"tabbit\" in your local knowledge base",
+      "native_tools": [],
+      "has_trigger": true,
+      "error_code": null,
+      "desc": "协议在末尾",
+      "params": {
+        "model": "DeepSeek-V4-Pro",
+        "task_name": "chat",
+        "agent_mode": false,
+        "variant": "end"
+      }
+    },
+    {
+      "ok": true,
+      "verdict": "✅用你的协议",
+      "text_len": 316,
+      "text_head": "I'll help you with both tasks. Let me call both tools simultaneously since they're independent of each other.  <<CALL_60",
+      "native_tools": [],
+      "has_trigger": true,
+      "error_code": null,
+      "desc": "协议夹击+强化提示",
+      "params": {
+        "model": "DeepSeek-V4-Pro",
+        "task_name": "chat",
+        "agent_mode": false,
+        "variant": "around"
+      }
+    },
+    {
+      "ok": true,
+      "verdict": "❌空回复",
+      "text_len": 0,
+      "text_head": "",
+      "native_tools": [],
+      "has_trigger": false,
+      "error_code": null,
+      "desc": "GLM-5.1 基线",
+      "params": {
+        "model": "GLM-5.1",
+        "task_name": "chat",
+        "agent_mode": false,
+        "variant": "start"
+      }
+    },
+    {
+      "ok": true,
+      "verdict": "❌走原生(memory_search)",
+      "text_len": 691,
+      "text_head": "I can calculate the addition directly and use my actual memory search tool for the 'tabbit' query. The tools described i",
+      "native_tools": [
+        "memory_search"
+      ],
+      "has_trigger": false,
+      "error_code": null,
+      "desc": "GLM-5.1 强化",
+      "params": {
+        "model": "GLM-5.1",
+        "task_name": "chat",
+        "agent_mode": false,
+        "variant": "around"
+      }
+    },
+    {
+      "ok": true,
+      "verdict": "⚠️纯文本不调工具",
+      "text_len": 697,
+      "text_head": "The sum of 12345 + 67890 is **80,235**.  However, I should be transparent: the tool format and trigger signal (`<<CALL_e",
+      "native_tools": [],
+      "has_trigger": true,
+      "error_code": null,
+      "desc": "Sonnet 基线",
+      "params": {
+        "model": "Claude-Sonnet-4.6",
+        "task_name": "chat",
+        "agent_mode": false,
+        "variant": "start"
+      }
+    },
+    {
+      "ok": true,
+      "verdict": "⚠️纯文本不调工具",
+      "text_len": 1013,
+      "text_head": "### **12345 + 67890 = 80,235.** Tabbit is the AI-powered browser developed by the Tabbit Team — which is me.  To address",
+      "native_tools": [],
+      "has_trigger": true,
+      "error_code": null,
+      "desc": "Sonnet 强化",
+      "params": {
+        "model": "Claude-Sonnet-4.6",
+        "task_name": "chat",
+        "agent_mode": false,
+        "variant": "around"
+      }
+    }
+  ]
+}
