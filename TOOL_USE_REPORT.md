@@ -368,3 +368,78 @@ export ANTHROPIC_MODEL=DeepSeek-V4-Pro
 - focused live guard 通过：`calculate` / `write_file` 这类带 required 参数的工具不会再因为上游 name-only 或 `{}` delta 提前产生空参 `tool_use`。
 - `scripts/verify_tool_loop.py --model DeepSeek-V4-Pro` 不适合继续当强门禁：模型有时会重复写/读或吐 Claude Code 风格 `Write`/`Read` 别名。脚本已补 `Write`/`Read`/`LS` 执行别名，但完整多轮结果仍受模型策略波动影响。
 - 发现并修复 name-only / empty-args tool delta：上游可能先发工具名、参数为空，甚至发 `{}`。Claude writer 现在先缓存 name-only delta；Claude route 对带 required 字段的工具会累积 JSON，直到 required 参数齐全才开启 `tool_use` block，避免客户端执行 `{}` 空参工具。
+
+---
+
+## 📊 2026-06-25 全模型工具能力矩阵复测
+
+> 排查 opencode 实测中「GPT-5.5/GLM-5.2 等无法调用工具，只有少数模型可用」的问题，对全部 22 个上游模型统一复测 tool calling 召回率。
+
+### 测试方法
+
+- 统一注入完整工具 prompt（`cc_` 别名 + `<<CALL_probe123>>` 触发信号），走网关 `_build_content` 真实 pipeline
+- 任务：`What is 17*23? You MUST use the multiply tool, do not compute yourself.` + `multiply` 工具
+- 判定 PASS：上游回复同时含触发信号 `<<CALL_probe123>>` + `<invoke>` XML（网关能解析为 `tool_calls`）
+- 判定 SILENT：直接心算 / 抢答 / 拒绝协议，未输出触发信号
+- 数据存档：`logs/tool_matrix.json`（运行产物，已 `.gitignore`）
+
+### 关键根因（probe 验证）
+
+1. **上游 v2 接口整体 404**（`{"detail":"Not Found"}`），所有模型都 fallback 走 v1——v1/v2 不是工具调用能力的分水岭。
+2. **v1 不支持原生 `tools` 字段**：给 payload 塞 `tools` + `tool_choice`，上游直接无视，模型照旧心算。「改用上游原生 tool 通道」这条路堵死。
+3. **唯一可行路径是文本协议注入**，工具调用全靠模型自觉——所以能力差异 100% 来自模型本身的指令跟随。
+
+### 22 模型完整榜单
+
+| 模型 | 工具调用 | 上游典型回复 |
+|---|---|---|
+| Kimi-K2.7-Code | ✅ PASS | `<<CALL_probe123>><invoke name="cc_multiply">...` |
+| MiniMax-M3 | ✅ PASS | `<<CALL_probe123>><invoke name="cc_multiply">...` |
+| DeepSeek-V4-Pro | ✅ PASS | `<<CALL_probe123>><invoke name="cc_multiply">...` |
+| DeepSeek-V4-Flash | ✅ PASS | `<<CALL_probe123>><invoke name="cc_multiply">...` |
+| Kimi-K2.6 | ✅ PASS | `<<CALL_probe123>><invoke ...>` |
+| GLM-5.1 | ✅ PASS | `<<CALL_probe123>><invoke ...>` |
+| GPT-5.2-Chat | ✅ PASS | `<<CALL_probe123>><invoke ...>` |
+| Claude-Haiku-4.5 | ✅ PASS | `<<CALL_probe123>><invoke ...>` |
+| DeepSeek-V3.2 | ✅ PASS | `<<CALL_probe123>><invoke ...>` |
+| Kimi-K2.5 | ✅ PASS | `<<CALL_probe123>><invoke ...>` |
+| Qwen3.5-Plus | ✅ PASS | `<<CALL_probe123>><invoke ...>` |
+| Doubao-Seed-1.8 | ✅ PASS | `<<CALL_probe123>><invoke ...>` |
+| Default | ❌ SILENT | `### **The result of multiplying 17 by 23 is 391.**` |
+| GLM-5.2 | ❌ SILENT | `### **17 × 23 = 391**` |
+| Claude-Opus-4.8 | ❌ SILENT | `### **17 × 23 = 391**` |
+| Gemini-3.5-Flash | ❌ SILENT | `### **The product of 17 and 23 is 391.**` |
+| GPT-5.5 | ❌ SILENT | `### **17 × 23 = 391**`（明说"I can't call that tool"）|
+| Claude-Opus-4.7 | ❌ SILENT | `I can't act on that tool protocol. 17 × 23 = 391.` |
+| GPT-5.4 | ❌ SILENT | `391` |
+| Gemini-3.1-Pro | ❌ SILENT | （空回复）|
+| Claude-Sonnet-4.6 | ❌ SILENT | `### **17 × 23 = 391**` |
+| MiniMax-M2.7 | ❌ SILENT | `<<CALL_probe123>>` 但无 `<invoke>`（部分协议，解析失败）|
+
+**汇总：12 PASS / 10 SILENT。**
+
+### 与 6/23 复测的差异（模型能力会漂移）
+
+| 模型 | 6/23 结论 | 6/25 结论 | 变化 |
+|---|---|---|---|
+| MiniMax-M3 | ❌ 不可用 | ✅ PASS | 🔼 翻盘 |
+| Claude-Opus-4.7 | ✅ 计算单PASS | ❌ SILENT | 🔽 退化 |
+| Kimi-K2.7-Code | 未测（新模型）| ✅ PASS | 🆕 新增可用 |
+
+> 同族不同版本能力分裂明显：`GLM-5.1`✅ / `GLM-5.2`❌；`GPT-5.2-Chat`✅ / `GPT-5.4`❌/`GPT-5.5`❌；`Kimi-K2.5/2.6/2.7` 全✅；`Claude-Haiku-4.5`✅ / `Sonnet-4.6`❌/`Opus-4.8`❌。
+> 模型能力随上游版本/路由变化，**这份榜单有时效性，接入前建议重跑 `scripts/probe_all_models_toolcall.py` 复核。**
+
+### 推荐配置（opencode / Claude Code 接入）
+
+- **首选**：`Kimi-K2.7-Code`（最新 Kimi，代码/指令跟随强，6/25 实测最稳）
+- **备选**：`DeepSeek-V4-Pro`（双通 + 推理强）、`Claude-Haiku-4.5`（唯一能用的 Claude 系）
+- **避坑**：`GPT-5.5`/`GPT-5.4`（抢答心算）、`Claude-Sonnet-4.6`/`Opus-4.8`（拒绝协议）、`Default`（混合不可控）、`Gemini-3.1-Pro`（空回复）
+
+### 复测脚本
+
+```bash
+# 全模型工具能力矩阵（单轮 tool call 召回）
+.venv/bin/python scripts/probe_all_models_toolcall.py
+
+# 或直接用网关 pipeline 复跑本次矩阵逻辑（见本次排查过程）
+```
