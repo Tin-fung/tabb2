@@ -596,6 +596,11 @@ def compress_content(parts: list[str], max_len: int) -> str:
 def _parse_invoke_xml(xml: str, name_map: dict[str, str] | None = None) -> dict | None:
     """解析 <invoke> XML，返回 {name, arguments}。
     name_map: 别名→原名映射，解析出的工具名会转回原名（cc_Write→Write）。
+
+    参数标签容错（实测 MiniMax 等模型常吐非标准标签）:
+    - 标准:   <parameter name="expr">...</parameter>
+    - 变体:   <param name="expr">...</param> / <arg name="expr">...</arg>
+    - 裸标签: <expr>...</expr>  (标签名即参数名，如 MiniMax-M3 的写法)
     """
     try:
         name_match = re.search(r'<invoke[^>]*name="([^"]+)"[^>]*>', xml, re.I)
@@ -606,11 +611,9 @@ def _parse_invoke_xml(xml: str, name_map: dict[str, str] | None = None) -> dict 
         if name_map:
             name = name_map.get(name, name)
         params: dict[str, Any] = {}
-        for m in re.finditer(
-            r'<parameter[^>]*name="([^"]+)"[^>]*>([\s\S]*?)</parameter>', xml, re.I
-        ):
-            key = m.group(1)
-            raw = m.group(2).strip()
+
+        def _store(key: str, raw: str):
+            raw = raw.strip()
             if raw:
                 try:
                     params[key] = json.loads(raw)
@@ -618,9 +621,65 @@ def _parse_invoke_xml(xml: str, name_map: dict[str, str] | None = None) -> dict 
                     params[key] = raw
             else:
                 params[key] = ""
+
+        # 1️⃣ 标准与变体: <parameter|param|arg name="x">value</...>
+        std_hits = 0
+        for m in re.finditer(
+            r'<(?:parameter|param|arg)[^>]*name="([^"]+)"[^>]*>([\s\S]*?)</(?:parameter|param|arg)>',
+            xml, re.I,
+        ):
+            _store(m.group(1), m.group(2))
+            std_hits += 1
+
+        # 2️⃣ 裸标签 fallback: <key>value</key>，标签名即参数名
+        #    仅当标准标签没匹配到时启用，避免重复；排除 invoke/parameter 等结构标签
+        if std_hits == 0:
+            for m in re.finditer(r'<([a-zA-Z_][\w.-]*)>([\s\S]*?)</\1>', xml):
+                tag = m.group(1).lower()
+                if tag in ("invoke", "parameter", "param", "arg", "function_list", "tool", "name", "description", "required", "parameters"):
+                    continue
+                _store(m.group(1), m.group(2))
+
         return {"name": name, "arguments": params}
     except Exception:
         return None
+
+
+def _parse_json_call(raw: str, name_map: dict[str, str] | None = None) -> dict | None:
+    """从裸 JSON 字符串解析工具调用，兼容破损 JSON。
+    形如 {"name":"cc_X","arguments":{...}} 或 {"name":"cc_X","parameters":{...}}。
+    """
+    try:
+        obj = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(obj, dict) or not obj.get("name"):
+        return None
+    name = obj["name"]
+    if name_map:
+        name = name_map.get(name, name)
+    args = obj.get("arguments")
+    if args is None:
+        args = obj.get("parameters", {})
+    if not isinstance(args, dict):
+        return None
+    return {"name": name, "arguments": args}
+
+
+def _loose_is_clean_text(text: str) -> bool:
+    """判断一段 text 是否是"干净的用户可见文本"，而非工具调用残片。
+    宽松兜底时用：含 <invoke / ```json / "name":"..."arguments 的判为残片，丢弃。
+    """
+    if not text:
+        return False
+    low = text.lower()
+    if "<invoke" in low or "</invoke>" in low:
+        return False
+    if "```json" in low:
+        return False
+    if re.search(r'"name"\s*:\s*"\w+"\s*,\s*"arguments"\s*:', text):
+        return False
+    return True
 
 
 def _clean_tool_protocol_residue(text: str) -> str:
@@ -706,12 +765,52 @@ class ToolifyParser:
             if content:
                 self.events.append({"type": "thinking", "content": content})
         self._try_emit_invokes(force=True)
+        # ⭐ 宽松兜底扫描: 若到流结束还没解析出任何 tool_call，把全部文本拼回来
+        # 再扫一遍，捞模型吐的非标准调用 (裸 <invoke> 无触发信号 / JSON / ```json 代码块)。
+        # 实测救回 MiniMax 等模型: 触发信号后标签写错导致 _try_emit_invokes 判 text 丢弃。
+        if not any(e["type"] == "tool_call" for e in self.events):
+            recovered = self._loose_recover_calls()
+            if recovered:
+                # 移除被判定为 text 的残片(避免把 invoke 文本同时当文本又当工具发给客户端)
+                self.events = [e for e in self.events if e["type"] != "text"
+                               or _loose_is_clean_text(e.get("content", ""))]
+                for call in recovered:
+                    self.events.append({"type": "tool_call", "call": call})
         self.events.append({"type": "end"})
         self.buffer = ""
         self.capture_buffer = ""
         self.capturing = False
         self.thinking_buffer = ""
         self.thinking_mode = False
+
+    def _loose_recover_calls(self) -> list[dict]:
+        """从已收集的 text 事件里宽松捞工具调用。返回 [{name, arguments}]。"""
+        text = "\n".join(
+            e.get("content", "") for e in self.events if e["type"] == "text"
+        )
+        if not text:
+            return []
+        calls: list[dict] = []
+
+        # 1️⃣ 裸 <invoke name="...">...</invoke> (无触发信号前导)
+        for m in re.finditer(r'<invoke[^>]*name="([^"]+)"[^>]*>([\s\S]*?)</invoke>', text, re.I):
+            parsed = _parse_invoke_xml(m.group(0), self.name_map)
+            if parsed:
+                calls.append(parsed)
+
+        if calls:
+            return calls
+
+        # 2️⃣ ```json 代码块里的 {"name":...,"arguments":{...}}
+        for m in re.finditer(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text):
+            calls.append(_parse_json_call(m.group(1), self.name_map))
+
+        # 3️⃣ 裸 JSON 对象 {"name":...,"arguments":{...}} (无代码块包裹)
+        if not calls:
+            for m in re.finditer(r'\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{[^{}]*\})\s*\}', text):
+                calls.append(_parse_json_call(m.group(0), self.name_map))
+
+        return [c for c in calls if c]
 
     def flush_text(self):
         """只 flush 残留文本 buffer，不发 end 事件。

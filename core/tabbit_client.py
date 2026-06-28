@@ -242,11 +242,15 @@ class TabbitClient:
         return cookies
 
     async def create_chat_session(self) -> str:
-        """创建聊天会话，返回 session_id
+        """创建聊天会话，返回 session_id。
 
-        用 RSC 方式 GET /chat/new，从响应里提取 session_id。
-        v10 验证: 此方式在 web.tabbit.ai 上可成功建会话。
+        上游路由已迁移: /chat/new 现在 307 重定向到 /session/new，
+        session_id 藏在 /session/new 响应的 NEXT_REDIRECT;/session/<UUID>;307 里。
+        ⚠️ router_state 必须用 chat 子树 (实测: /session/new + session子树 = 500,
+        /session/new + chat子树 = 200 含 UUID)。
+        三级提取: NEXT_REDIRECT digest → 路径 UUID → 任意裸 UUID。
         """
+        # router_state 保持 chat 子树 (实测唯一有效组合)
         router_state = [
             "",
             {
@@ -267,32 +271,52 @@ class TabbitClient:
             None,
             None,
         ]
-        headers = {
-            **self._get_headers("/chat/new"),
-            "rsc": "1",
-            "next-router-state-tree": urllib.parse.quote(json.dumps(router_state)),
-        }
-        resp = await self.client.get(
-            f"{self.base_url}/chat/new",
-            params={"_rsc": "auto"},
-            headers=headers,
-            cookies=self._get_cookies(),
-        )
-        self._sync_server_time(resp)
-        text = resp.text
-        match = re.search(
-            r"/(?:chat|session)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
-            text,
-        )
-        if match:
-            return match.group(1)
-        # 兜底：响应里直接找任意 UUID（v10 验证响应含裸 UUID）
-        uuids = re.findall(
-            r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
-            text,
-        )
-        if uuids:
-            return uuids[0]
+
+        async def _try(path: str) -> str | None:
+            headers = {
+                **self._get_headers(path),
+                "rsc": "1",
+                "next-router-state-tree": urllib.parse.quote(json.dumps(router_state)),
+            }
+            resp = await self.client.get(
+                f"{self.base_url}{path}",
+                params={"_rsc": "auto"},
+                headers=headers,
+                cookies=self._get_cookies(),
+            )
+            self._sync_server_time(resp)
+            text = resp.text
+            # 1️⃣ 最精准: NEXT_REDIRECT digest 里挖 /session/<UUID>
+            m = re.search(
+                r"NEXT_REDIRECT;[^;]*;/(?:chat|session)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+                text,
+            )
+            if m:
+                return m.group(1)
+            # 2️⃣ 路径里的 UUID
+            m = re.search(
+                r"/(?:chat|session)/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+                text,
+            )
+            if m:
+                return m.group(1)
+            # 3️⃣ 兜底: 任意裸 UUID
+            uuids = re.findall(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                text,
+            )
+            if uuids:
+                return uuids[0]
+            return None
+
+        # 主路径: /session/new (上游当前路由, 实测有效)
+        sid = await _try("/session/new")
+        if sid:
+            return sid
+        # fallback: /chat/new (老路由, 万一回归)
+        sid = await _try("/chat/new")
+        if sid:
+            return sid
         raise Exception("Failed to extract chat session_id from response")
 
     async def get_quota_usage(self) -> dict:

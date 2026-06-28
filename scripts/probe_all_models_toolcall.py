@@ -21,6 +21,8 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.tabbit_client import TabbitClient  # noqa: E402
 from core.claude_compat import map_claude_to_content, random_trigger_signal  # noqa: E402
+from core.config import ConfigManager  # noqa: E402
+from core.token_manager import TokenManager  # noqa: E402
 from core.model_registry import ModelRegistry  # noqa: E402
 
 # 两套测试任务
@@ -72,8 +74,8 @@ def classify(text: str, trigger_signal: str) -> str:
     return "SILENT"
 
 
-async def test_model(client: TabbitClient, model: str, task: dict) -> dict:
-    """测单个模型单个任务，返回结果"""
+async def test_model(tm: TokenManager, model: str, task: dict) -> dict:
+    """测单个模型单个任务，返回结果。每次走 TokenManager 取活 client（同生产路径）。"""
     body = {
         "tools": [task["tool"]],
         "messages": [{"role": "user", "content": task["user_msg"]}],
@@ -81,6 +83,10 @@ async def test_model(client: TabbitClient, model: str, task: dict) -> dict:
     ts = random_trigger_signal()
     body["_trigger_signal"] = ts
     content, refs, tn = map_claude_to_content(body, ts)
+    token_info, client = await tm.get_next()
+    if not client:
+        return {"model": model, "task": task["key"], "verdict": "ERROR",
+                "len": 0, "text": "no available token (all cooled down?)"}
     try:
         sid = await client.create_chat_session()
         full = ""
@@ -93,7 +99,7 @@ async def test_model(client: TabbitClient, model: str, task: dict) -> dict:
             "task": task["key"],
             "verdict": verdict,
             "len": len(full),
-            "text": full[:200],
+            "text": full[:500],  # 放宽到 500，便于分析病灶
         }
     except Exception as e:
         return {
@@ -101,44 +107,39 @@ async def test_model(client: TabbitClient, model: str, task: dict) -> dict:
             "task": task["key"],
             "verdict": "ERROR",
             "len": 0,
-            "text": str(e)[:200],
+            "text": str(e)[:300],
         }
 
 
 async def main():
-    cfg = json.load(open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config.json")))
-    token = cfg["tokens"][0]["value"]
-    base_url = cfg["tabbit"]["base_url"]
+    # 走项目自己的 ConfigManager + TokenManager，与真实 Claude Code 请求同源
+    # 这样 token 轮转/冷却/client_id/verify_ssl 全部对齐生产路径，结果才可信
+    cfg = ConfigManager()
+    tm = TokenManager(cfg)
+    if not tm.has_tokens:
+        print("[FATAL] config 中没有可用 token，请先在 /admin 添加 tabbit token")
+        return
+    base_url = cfg.get("tabbit", "base_url")
 
-    # 拉真实模型清单
-    reg = ModelRegistry(base_url, verify_ssl=False)
+    # 拉真实模型清单（registry 自带 snapshot 兜底）
+    reg = ModelRegistry(base_url, verify_ssl=cfg.get("tabbit", "verify_ssl", default=False))
     await reg.refresh_with_retry(retries=2)
     models = [m["selected_model"] for m in reg._models_meta] if reg._models_meta else []
-    # Default 混合模型放第一个测
     if "Default" in models:
         models.remove("Default")
         models.insert(0, "Default")
     print(f"待测模型 {len(models)} 个: {models}\n")
 
-    client = TabbitClient(
-        token, base_url=base_url,
-        browser_version=cfg["tabbit"].get("browser_version"),
-        sparkle_version=cfg["tabbit"].get("sparkle_version"),
-        default_browser=True,
-    )
-
     results = []
     for i, model in enumerate(models):
         print(f"[{i+1}/{len(models)}] 测试 {model} ...", flush=True)
         for task in TASKS:
-            r = await test_model(client, model, task)
+            r = await test_model(tm, model, task)
             mark = {"PASS": "✅", "PARTIAL": "⚠️", "REJECT": "❌", "SILENT": "💤", "ERROR": "💥"}.get(r["verdict"], "?")
             print(f"  {mark} {r['task']:12s} {r['verdict']:8s} | {r['text'][:80]}", flush=True)
             results.append(r)
             await asyncio.sleep(1)
         await asyncio.sleep(1)
-
-    await client.client.aclose()
 
     # 汇总表
     print("\n" + "=" * 80)
