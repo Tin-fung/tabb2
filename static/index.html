@@ -1488,8 +1488,17 @@ function flattenQuota(obj, prefix = '') {
 
 function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
+function attrEsc(s) {
+  return String(s ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function jsArg(value) {
-  return esc(JSON.stringify(value ?? ''));
+  return attrEsc(JSON.stringify(value ?? ''));
 }
 
 function tokenDisplayName(t) {

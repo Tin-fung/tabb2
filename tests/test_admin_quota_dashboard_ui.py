@@ -23,6 +23,13 @@ class AdminQuotaDashboardUiTest(unittest.TestCase):
         self.assertIn("function useCouponForToken(tokenId, couponCode)", html)
         self.assertIn("token_id=${encodeURIComponent(tokenId)}", html)
 
+    def test_inline_action_arguments_escape_attribute_quotes(self):
+        html = STATIC_INDEX.read_text(encoding="utf-8")
+
+        self.assertIn("function attrEsc(s)", html)
+        self.assertIn(".replace(/\"/g, '&quot;')", html)
+        self.assertIn("return attrEsc(JSON.stringify(value ?? ''));", html)
+
     def test_quota_dashboard_escapes_untrusted_fields(self):
         html = STATIC_INDEX.read_text(encoding="utf-8")
 
