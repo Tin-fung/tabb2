@@ -1,6 +1,15 @@
+import base64
+import json
 import unittest
 
 from routes.admin_api import build_quota_overview
+
+
+def unsigned_jwt(payload: dict) -> str:
+    encoded = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    return f"header.{encoded}.signature"
 
 
 class FakeClient:
@@ -46,6 +55,28 @@ class AdminQuotaOverviewTest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("value", result["accounts"][0])
         self.assertEqual(result["accounts"][0]["quota"]["data"]["member_level"], "pro")
         self.assertEqual(result["usage_records"][0]["token_name"], "Account 1")
+
+    async def test_overview_exposes_display_identity_for_generic_names(self):
+        token_value = unsigned_jwt({"email": "alice@example.com"})
+        tokens = [
+            {
+                "id": "t1",
+                "name": "Google Account",
+                "value": token_value,
+                "enabled": True,
+            },
+        ]
+
+        async def client_for_token(token_id):
+            return tokens[0], FakeClient(token_id)
+
+        result = await build_quota_overview(tokens, client_for_token)
+        account = result["accounts"][0]
+
+        self.assertEqual(account["account_label"], "alice@example.com")
+        self.assertEqual(account["display_name"], "alice@example.com")
+        self.assertEqual(account["token_name"], "Google Account")
+        self.assertNotIn("value", account)
 
     async def test_subsection_failure_does_not_fail_whole_overview(self):
         tokens = [{"id": "t1", "name": "Account 1", "enabled": True}]

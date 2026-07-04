@@ -1051,196 +1051,304 @@ function renderDiagResult(r) {
 
 // ── 额度查询 ──
 
-let lastQuotaResult = null; // 缓存额度结果，切页面后恢复
-let lastCouponsResult = null; // 缓存重置券结果
-let lastSignInStatus = null; // 缓存签到状态
-let availableTokens = []; // 可用账号列表
-let selectedTokenId = ''; // 当前选中的账号 ID
+let lastQuotaOverview = null; // 缓存额度总览，切页面后恢复
 
 async function renderQuota(el) {
-  // 先加载账号列表
-  await loadTokens();
-
   el.innerHTML = `
-    <div class="flex items-center justify-between mb-6">
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
       <div>
         <h2 class="text-2xl font-semibold">额度管理</h2>
-        <p class="text-sm text-zinc-500 mt-1">查询额度、管理重置券、签到领奖励</p>
+        <p class="text-sm text-zinc-500 mt-1">全部账号额度、重置券、签到状态集中查看</p>
       </div>
-      <div class="flex gap-2">
-        <button onclick="runQuota()" id="quotaRunBtn" class="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 transition-colors">查询额度</button>
-        <button onclick="runSignIn()" id="signInBtn" class="rounded-lg bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-600 transition-colors">签到</button>
-      </div>
+      <button onclick="runQuotaOverview()" id="quotaRefreshBtn" class="rounded-lg bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 transition-colors touch-target">刷新全部</button>
     </div>
 
-    <!-- 账号选择器 -->
-    <div class="mb-4 p-4 bg-zinc-900 rounded-lg">
-      <div class="flex items-center gap-4">
-        <label class="text-sm text-zinc-400">当前账号：</label>
-        <select id="tokenSelector" onchange="onTokenChange(this.value)" class="flex-1 bg-zinc-800 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-200 focus:outline-none focus:border-emerald-500">
-          <option value="">全部账号</option>
-          ${availableTokens.map(t => `<option value="${t.id}" ${t.id === selectedTokenId ? 'selected' : ''}>${esc(t.name || t.id)}</option>`).join('')}
-        </select>
-        <button onclick="loadTokens()" class="rounded-lg bg-zinc-700 px-3 py-2 text-sm text-zinc-300 hover:bg-zinc-600 transition-colors">刷新</button>
-      </div>
-    </div>
+    <div id="quotaAccountGrid" class="grid grid-cols-1 xl:grid-cols-2 gap-4"></div>
 
-    <!-- 功能选项卡 -->
-    <div class="flex gap-1 mb-4 bg-zinc-900 rounded-lg p-1">
-      <button onclick="switchQuotaTab('quota')" id="tab-quota" class="quota-tab flex-1 px-3 py-2 text-sm font-medium rounded-md bg-zinc-700 text-white">额度概览</button>
-      <button onclick="switchQuotaTab('coupons')" id="tab-coupons" class="quota-tab flex-1 px-3 py-2 text-sm font-medium rounded-md text-zinc-400 hover:text-white">重置券</button>
-      <button onclick="switchQuotaTab('sign-in')" id="tab-sign-in" class="quota-tab flex-1 px-3 py-2 text-sm font-medium rounded-md text-zinc-400 hover:text-white">签到</button>
-      <button onclick="switchQuotaTab('records')" id="tab-records" class="quota-tab flex-1 px-3 py-2 text-sm font-medium rounded-md text-zinc-400 hover:text-white">使用记录</button>
-    </div>
+    <div id="usageRecordsSection" class="mt-6"></div>`;
 
-    <!-- 内容区域 -->
-    <div id="quotaContent">
-      <div id="quotaResult"></div>
-      <div id="couponsResult" style="display:none"></div>
-      <div id="signInResult" style="display:none"></div>
-      <div id="recordsResult" style="display:none"></div>
-    </div>`;
-
-  // 恢复上次结果（切页面不丢失）
-  if (lastQuotaResult) renderQuotaResult(lastQuotaResult);
+  if (lastQuotaOverview) {
+    renderQuotaOverview(lastQuotaOverview);
+  } else {
+    await runQuotaOverview();
+  }
 }
 
-async function loadTokens() {
+async function runQuotaOverview() {
+  const btn = document.getElementById('quotaRefreshBtn');
+  const grid = document.getElementById('quotaAccountGrid');
+  const usage = document.getElementById('usageRecordsSection');
+  if (btn) { btn.disabled = true; btn.textContent = '刷新中...'; }
+  if (grid) {
+    grid.innerHTML = `
+      <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5 xl:col-span-2">
+        <p class="text-sm text-zinc-400">正在拉取全部账号额度...</p>
+      </div>`;
+  }
+  if (usage) {
+    usage.innerHTML = `
+      <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
+        <p class="text-sm text-zinc-400">正在汇总使用记录...</p>
+      </div>`;
+  }
+
   try {
-    const r = await api('/tokens');
-    if (r.tokens) {
-      availableTokens = r.tokens.filter(t => t.enabled);
-      // 如果没有选中的 token，默认选第一个
-      if (!selectedTokenId && availableTokens.length > 0) {
-        selectedTokenId = availableTokens[0].id;
+    const r = await api('/quota/overview');
+    lastQuotaOverview = r;
+    renderQuotaOverview(r);
+  } catch (e) {
+    const err = `<div class="rounded-xl border border-red-900/50 bg-red-950/20 p-5"><p class="text-sm text-red-400">加载失败: ${esc(e.message)}</p></div>`;
+    if (grid) grid.innerHTML = err;
+    if (usage) usage.innerHTML = err;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '刷新全部'; }
+  }
+}
+
+function renderQuotaOverview(r) {
+  const grid = document.getElementById('quotaAccountGrid');
+  const usage = document.getElementById('usageRecordsSection');
+  if (!grid || !usage) return;
+
+  if (!r || !r.ok) {
+    const err = esc(r?.error || '加载失败');
+    grid.innerHTML = `<div class="rounded-xl border border-red-900/50 bg-red-950/20 p-5 xl:col-span-2"><p class="text-sm text-red-400">${err}</p></div>`;
+    usage.innerHTML = '';
+    return;
+  }
+
+  const accounts = r.accounts || [];
+  grid.innerHTML = accounts.length
+    ? accounts.map(renderQuotaAccountCard).join('')
+    : `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5 xl:col-span-2"><p class="text-sm text-zinc-400">暂无启用账号</p></div>`;
+  usage.innerHTML = renderCombinedUsageRecords(r.usage_records || []);
+}
+
+function renderQuotaAccountCard(account) {
+  const tokenId = account.token_id || '';
+  const status = account.status || 'unknown';
+  const badgeColor = status === 'active' ? 'bg-emerald-900/50 text-emerald-300' : status === 'error' ? 'bg-red-900/50 text-red-300' : 'bg-zinc-800 text-zinc-400';
+  const meta = [
+    account.account_label && account.account_label !== quotaAccountDisplayName(account) ? `账号: ${esc(account.account_label)}` : '',
+    account.token_name && account.token_name !== quotaAccountDisplayName(account) ? `名称: ${esc(account.token_name || account.token_id)}` : '',
+    tokenId ? `ID: ${esc(tokenId)}` : '',
+  ].filter(Boolean).join(' · ');
+
+  return `
+    <article class="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
+      <div class="flex flex-col sm:flex-row sm:items-start justify-between gap-3 mb-5">
+        <div class="min-w-0">
+          <h3 class="text-base font-semibold text-zinc-100 break-words">${esc(quotaAccountDisplayName(account))}</h3>
+          <p class="text-xs text-zinc-500 break-all mt-1">${meta}</p>
+        </div>
+        <span class="shrink-0 text-xs px-2.5 py-0.5 rounded-full ${badgeColor}">${esc(status)}</span>
+      </div>
+      <div class="space-y-5">
+        ${renderAccountQuotaSection(account)}
+        ${renderAccountCouponsSection(account)}
+        ${renderAccountSignInSection(account)}
+      </div>
+    </article>`;
+}
+
+function quotaAccountDisplayName(account) {
+  return account.display_name || account.account_label || account.token_name || account.token_id || 'Token';
+}
+
+function renderAccountQuotaSection(account) {
+  const quota = account.quota || {};
+  if (!quota.ok) {
+    return `
+      <section class="border-t border-zinc-800 pt-4">
+        <div class="text-sm font-medium text-zinc-200 mb-3">额度概览</div>
+        <p class="text-sm text-red-400">${esc(quota.error || '查询失败')}</p>
+      </section>`;
+  }
+
+  const q = quota.data || {};
+  return `
+    <section class="border-t border-zinc-800 pt-4">
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <div class="text-sm font-medium text-zinc-200">额度概览</div>
+        <span class="text-xs text-emerald-400">已同步</span>
+      </div>
+      ${renderQuotaCards(q)}
+      <details class="mt-3">
+        <summary class="text-xs text-zinc-500 cursor-pointer hover:text-zinc-400">原始响应</summary>
+        <pre class="text-xs text-zinc-400 mt-2 overflow-x-auto bg-zinc-950 p-3 rounded-lg">${esc(JSON.stringify(q, null, 2))}</pre>
+      </details>
+    </section>`;
+}
+
+function renderAccountCouponsSection(account) {
+  const tokenId = account.token_id || '';
+  const result = account.coupons || {};
+  if (!result.ok) {
+    return `
+      <section class="border-t border-zinc-800 pt-4">
+        <div class="flex items-center justify-between gap-3 mb-3">
+          <div class="text-sm font-medium text-zinc-200">重置券</div>
+          <button onclick="claimCouponForToken(${jsArg(tokenId)})" class="rounded-lg bg-amber-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-600 transition-colors">领取</button>
+        </div>
+        <p class="text-sm text-red-400">${esc(result.error || '查询失败')}</p>
+      </section>`;
+  }
+
+  const data = result.data || {};
+  const coupons = Array.isArray(data) ? data : (data.coupons || []);
+  const rows = coupons.map(c => {
+    const code = c.coupon_code || '';
+    const action = code
+      ? `onclick="useCouponForToken(${jsArg(tokenId)}, ${jsArg(code)})"`
+      : 'disabled';
+    return `
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-t border-zinc-800 py-3 first:border-t-0">
+        <div class="min-w-0">
+          <div class="text-sm font-medium text-zinc-200">${esc(c.coupon_name || '周重置券')}</div>
+          <div class="text-xs text-zinc-500 font-mono break-all">${esc(c.coupon_code || '')}</div>
+          ${c.valid_start_time && c.valid_end_time ? `<div class="text-xs text-zinc-500 mt-1">有效期: ${esc(c.valid_start_time)} ~ ${esc(c.valid_end_time)}</div>` : ''}
+        </div>
+        <button ${action} class="shrink-0 rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-500 transition-colors">使用</button>
+      </div>`;
+  }).join('');
+
+  return `
+    <section class="border-t border-zinc-800 pt-4">
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <div>
+          <div class="text-sm font-medium text-zinc-200">重置券</div>
+          <div class="text-xs text-zinc-500 mt-0.5">${coupons.length} 张可用</div>
+        </div>
+        <button onclick="claimCouponForToken(${jsArg(tokenId)})" class="rounded-lg bg-amber-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-600 transition-colors">领取</button>
+      </div>
+      ${rows || '<p class="text-sm text-zinc-500">暂无可用重置券</p>'}
+    </section>`;
+}
+
+function renderAccountSignInSection(account) {
+  const tokenId = account.token_id || '';
+  const result = account.sign_in || {};
+  if (!result.ok) {
+    return `
+      <section class="border-t border-zinc-800 pt-4">
+        <div class="flex items-center justify-between gap-3 mb-3">
+          <div class="text-sm font-medium text-zinc-200">签到</div>
+          <button onclick="signInToken(${jsArg(tokenId)})" class="rounded-lg bg-blue-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 transition-colors">签到</button>
+        </div>
+        <p class="text-sm text-red-400">${esc(result.error || '查询失败')}</p>
+      </section>`;
+  }
+
+  const data = result.data || {};
+  const results = data.results || [];
+  const allSigned = results.length > 0 && results.every(s => s.signed_today);
+  const rows = results.map(s => {
+    const signed = Boolean(s.signed_today);
+    const sceneName = s.scene_code === 'daily_sign_in' ? '每日签到' : s.scene_code === 'desktop_pet' ? '桌面宠物' : (s.scene_name || s.scene_code || '签到场景');
+    return `
+      <div class="flex items-center justify-between gap-3 border-t border-zinc-800 py-3 first:border-t-0">
+        <div>
+          <div class="text-sm font-medium text-zinc-200">${esc(sceneName)}</div>
+          <div class="text-xs text-zinc-500">已签到 ${esc(String(s.signed_days || 0))} 天</div>
+        </div>
+        <span class="text-xs px-2 py-0.5 rounded ${signed ? 'bg-emerald-900/50 text-emerald-300' : 'bg-zinc-800 text-zinc-400'}">${signed ? '✓ 今日已签' : '未签到'}</span>
+      </div>`;
+  }).join('');
+
+  return `
+    <section class="border-t border-zinc-800 pt-4">
+      <div class="flex items-center justify-between gap-3 mb-3">
+        <div>
+          <div class="text-sm font-medium text-zinc-200">签到</div>
+          <div class="text-xs text-zinc-500 mt-0.5">${esc(data.sign_in_date || '今日')}</div>
+        </div>
+        ${allSigned
+          ? '<span class="text-xs text-emerald-400">✓ 今日已全部签到</span>'
+          : `<button onclick="signInToken(${jsArg(tokenId)})" class="rounded-lg bg-blue-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 transition-colors">签到</button>`
+        }
+      </div>
+      ${rows || '<p class="text-sm text-zinc-500">暂无签到状态</p>'}
+    </section>`;
+}
+
+function renderCombinedUsageRecords(groups) {
+  const failures = (groups || []).filter(g => !g.ok);
+  const records = (groups || []).flatMap(group => (group.records || []).map(rec => ({
+    accountName: quotaAccountDisplayName(group),
+    accountId: group.token_id,
+    rec,
+  })));
+  const warnings = failures.map(g => `
+    <div class="rounded-lg bg-red-950/20 px-3 py-2 text-xs text-red-300">
+      ${esc(quotaAccountDisplayName(g))}: ${esc(g.error || '查询失败')}
+    </div>`).join('');
+
+  const rows = records.slice(0, 80).map(item => {
+    const rec = item.rec || {};
+    const when = rec.request_time || rec.created_at;
+    const usage = String(rec.consume_percentage || '-');
+    const color = usage.startsWith('+') ? 'text-emerald-400' : usage.startsWith('-') ? 'text-red-400' : 'text-zinc-300';
+    return `
+      <tr class="border-b border-zinc-800/70 hover:bg-zinc-800/30">
+        <td class="px-4 py-3 text-xs text-zinc-300">${esc(item.accountName || item.accountId)}</td>
+        <td class="px-4 py-3 text-xs text-zinc-400 whitespace-nowrap">${esc(when ? fmtTime(when) : '-')}</td>
+        <td class="px-4 py-3 text-xs text-zinc-300">${esc(rec.scene_group_name_display || rec.scene_group_name || '-')}</td>
+        <td class="px-4 py-3 text-xs font-mono ${color} whitespace-nowrap">${esc(usage)}</td>
+      </tr>`;
+  }).join('');
+
+  return `
+    <div class="rounded-xl border border-zinc-800 bg-zinc-900">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-5 py-4 border-b border-zinc-800">
+        <div>
+          <h3 class="text-sm font-medium text-zinc-200">使用记录</h3>
+          <p class="text-xs text-zinc-500 mt-0.5">全部账号最近记录汇总</p>
+        </div>
+        <span class="text-xs text-zinc-500">${records.length} 条</span>
+      </div>
+      ${warnings ? `<div class="space-y-2 px-5 pt-4">${warnings}</div>` : ''}
+      ${records.length ? `
+        <div class="overflow-x-auto table-container">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-left text-zinc-500 border-b border-zinc-800">
+                <th class="px-4 py-3 font-medium whitespace-nowrap">账号</th>
+                <th class="px-4 py-3 font-medium whitespace-nowrap">时间</th>
+                <th class="px-4 py-3 font-medium">功能</th>
+                <th class="px-4 py-3 font-medium whitespace-nowrap">用量</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>` : '<div class="px-5 py-8 text-center text-sm text-zinc-500">暂无使用记录</div>'
       }
-      // 更新下拉框
-      const selector = document.getElementById('tokenSelector');
-      if (selector) {
-        selector.innerHTML = `<option value="">全部账号</option>
-          ${availableTokens.map(t => `<option value="${t.id}" ${t.id === selectedTokenId ? 'selected' : ''}>${esc(t.name || t.id)}</option>`).join('')}`;
-      }
+    </div>`;
+}
+
+async function signInToken(tokenId) {
+  if (!confirm('确定要为该账号执行签到吗？')) return;
+  try {
+    const r = await api(`/sign-in?token_id=${encodeURIComponent(tokenId)}`, { method: 'POST' });
+    if (r.ok) {
+      const results = r.result?.results || [];
+      const successCount = results.filter(s => s.sign_in_result === 'success').length;
+      alert(`签到完成，${successCount} 个场景成功。`);
+      await runQuotaOverview();
+    } else {
+      alert('签到失败: ' + (r.error || '未知错误'));
     }
   } catch (e) {
-    console.error('加载账号列表失败:', e);
+    alert('签到失败: ' + e.message);
   }
 }
 
-function onTokenChange(tokenId) {
-  selectedTokenId = tokenId;
-  // 清除缓存，强制刷新当前页面
-  lastQuotaResult = null;
-  lastCouponsResult = null;
-  lastSignInStatus = null;
-  // 刷新当前选项卡的内容
-  const activeTab = document.querySelector('.quota-tab.bg-zinc-700');
-  if (activeTab) {
-    const tabName = activeTab.id.replace('tab-', '');
-    switchQuotaTab(tabName);
-  }
-}
-
-function switchQuotaTab(tab) {
-  // 切换选项卡样式
-  document.querySelectorAll('.quota-tab').forEach(btn => {
-    btn.classList.remove('bg-zinc-700', 'text-white');
-    btn.classList.add('text-zinc-400');
-  });
-  document.getElementById(`tab-${tab}`).classList.remove('text-zinc-400');
-  document.getElementById(`tab-${tab}`).classList.add('bg-zinc-700', 'text-white');
-
-  // 切换内容显示
-  document.getElementById('quotaResult').style.display = tab === 'quota' ? 'block' : 'none';
-  document.getElementById('couponsResult').style.display = tab === 'coupons' ? 'block' : 'none';
-  document.getElementById('signInResult').style.display = tab === 'sign-in' ? 'block' : 'none';
-  document.getElementById('recordsResult').style.display = tab === 'records' ? 'block' : 'none';
-
-  // 加载对应内容
-  if (tab === 'coupons' && !lastCouponsResult) runCoupons();
-  if (tab === 'sign-in' && !lastSignInStatus) runSignInStatus();
-  if (tab === 'records') runRecords();
-}
-
-async function runQuota() {
-  const btn = document.getElementById('quotaRunBtn');
-  const el = document.getElementById('quotaResult');
-  btn.disabled = true; btn.textContent = '查询中...';
-  el.innerHTML = '<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-zinc-400">正在查询额度...</p></div>';
+async function claimCouponForToken(tokenId) {
+  if (!confirm('确定要为该账号领取重置券吗？')) return;
   try {
-    const params = selectedTokenId ? `?token_id=${selectedTokenId}` : '';
-    const r = await api('/quota' + params);
-    lastQuotaResult = r;
-    renderQuotaResult(r);
-  } catch (e) {
-    el.innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">查询失败: ${esc(e.message)}</p></div>`;
-  } finally {
-    btn.disabled = false; btn.textContent = '查询额度';
-  }
-}
-
-// ── 重置券管理 ──
-
-async function runCoupons() {
-  const el = document.getElementById('couponsResult');
-  el.innerHTML = '<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-zinc-400">正在查询重置券列表...</p></div>';
-  try {
-    const params = selectedTokenId ? `?token_id=${selectedTokenId}` : '';
-    const r = await api('/coupons' + params);
-    lastCouponsResult = r;
-    renderCouponsResult(r);
-  } catch (e) {
-    el.innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">查询失败: ${esc(e.message)}</p></div>`;
-  }
-}
-
-function renderCouponsResult(r) {
-  const el = document.getElementById('couponsResult');
-  if (!r.ok) {
-    el.innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">${esc(r.error || '查询失败')}</p></div>`;
-    return;
-  }
-
-  const coupons = r.coupons?.coupons || [];
-  const tokenInfo = `<div class="text-xs text-zinc-500 mb-3">Token: ${esc(r.token_name || r.token_id)}</div>`;
-
-  if (coupons.length === 0) {
-    el.innerHTML = `${tokenInfo}
-      <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
-        <p class="text-sm text-zinc-400">暂无可用重置券</p>
-        <button onclick="claimCoupon()" class="mt-3 rounded-lg bg-amber-700 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600 transition-colors">领取重置券</button>
-      </div>`;
-    return;
-  }
-
-  const couponList = coupons.map(c => `
-    <div class="flex items-center justify-between p-3 bg-zinc-800 rounded-lg mb-2">
-      <div>
-        <div class="text-sm font-medium text-zinc-200">${esc(c.coupon_name || '周重置券')}</div>
-        <div class="text-xs text-zinc-500">${esc(c.coupon_code)}</div>
-        ${c.valid_start_time && c.valid_end_time ? `<div class="text-xs text-zinc-500 mt-1">有效期: ${esc(c.valid_start_time)} ~ ${esc(c.valid_end_time)}</div>` : ''}
-      </div>
-      <button onclick="useCoupon('${esc(c.coupon_code)}')" class="rounded-lg bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-600 transition-colors">使用</button>
-    </div>
-  `).join('');
-
-  el.innerHTML = `${tokenInfo}
-    <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
-      <div class="flex items-center justify-between mb-3">
-        <span class="text-sm font-medium text-zinc-200">可用重置券 (${coupons.length} 张)</span>
-        <button onclick="claimCoupon()" class="rounded-lg bg-amber-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-amber-600 transition-colors">领取更多</button>
-      </div>
-      ${couponList}
-    </div>`;
-}
-
-async function claimCoupon() {
-  if (!confirm('确定要领取重置券吗？')) return;
-  try {
-    const params = selectedTokenId ? `?token_id=${selectedTokenId}` : '';
-    const r = await api('/coupons/claim' + params, { method: 'POST' });
+    const r = await api(`/coupons/claim?token_id=${encodeURIComponent(tokenId)}`, { method: 'POST' });
     if (r.ok) {
-      alert('领取成功！' + (r.result?.participation_result === 'already_participated' ? '（已领取过）' : ''));
-      runCoupons(); // 刷新列表
+      alert('领取完成' + (r.result?.participation_result === 'already_participated' ? '（已领取过）' : '。'));
+      await runQuotaOverview();
     } else {
       alert('领取失败: ' + (r.error || '未知错误'));
     }
@@ -1249,162 +1357,20 @@ async function claimCoupon() {
   }
 }
 
-async function useCoupon(couponCode) {
+async function useCouponForToken(tokenId, couponCode) {
+  if (!couponCode) return;
   if (!confirm(`确定要使用重置券 ${couponCode} 吗？\n使用后额度将重置为 100%。`)) return;
   try {
-    let params = `?coupon_code=${encodeURIComponent(couponCode)}`;
-    if (selectedTokenId) params += `&token_id=${selectedTokenId}`;
-    const r = await api('/coupons/use' + params, { method: 'POST' });
+    const r = await api(`/coupons/use?token_id=${encodeURIComponent(tokenId)}&coupon_code=${encodeURIComponent(couponCode)}`, { method: 'POST' });
     if (r.ok && r.result?.use_result !== 'failed') {
-      alert('使用成功！额度已重置。');
-      runQuota(); // 刷新额度
-      runCoupons(); // 刷新券列表
+      alert('使用成功，额度已重置。');
+      await runQuotaOverview();
     } else {
       alert('使用失败: ' + (r.result?.error_message || r.error || '未知错误'));
     }
   } catch (e) {
     alert('使用失败: ' + e.message);
   }
-}
-
-// ── 签到功能 ──
-
-async function runSignInStatus() {
-  const el = document.getElementById('signInResult');
-  el.innerHTML = '<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-zinc-400">正在查询签到状态...</p></div>';
-  try {
-    const params = selectedTokenId ? `?token_id=${selectedTokenId}` : '';
-    const r = await api('/sign-in/status' + params);
-    lastSignInStatus = r;
-    renderSignInResult(r);
-  } catch (e) {
-    el.innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">查询失败: ${esc(e.message)}</p></div>`;
-  }
-}
-
-function renderSignInResult(r) {
-  const el = document.getElementById('signInResult');
-  if (!r.ok) {
-    el.innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">${esc(r.error || '查询失败')}</p></div>`;
-    return;
-  }
-
-  const status = r.status || {};
-  const results = status.results || [];
-  const today = status.sign_in_date || '';
-
-  const tokenInfo = `<div class="text-xs text-zinc-500 mb-3">Token: ${esc(r.token_name || r.token_id)} | 日期: ${esc(today)}</div>`;
-
-  const sceneList = results.map(s => {
-    const signed = s.signed_today;
-    const sceneName = s.scene_code === 'daily_sign_in' ? '每日签到' : s.scene_code === 'desktop_pet' ? '桌面宠物' : s.scene_code;
-    return `
-      <div class="flex items-center justify-between p-3 bg-zinc-800 rounded-lg mb-2">
-        <div>
-          <div class="text-sm font-medium text-zinc-200">${esc(sceneName)}</div>
-          <div class="text-xs text-zinc-500">已签到 ${s.signed_days || 0} 天</div>
-        </div>
-        <span class="text-xs px-2 py-0.5 rounded ${signed ? 'bg-emerald-900/50 text-emerald-300' : 'bg-zinc-700 text-zinc-400'}">
-          ${signed ? '✓ 今日已签' : '未签到'}
-        </span>
-      </div>`;
-  }).join('');
-
-  const allSigned = results.every(s => s.signed_today);
-
-  el.innerHTML = `${tokenInfo}
-    <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
-      <div class="flex items-center justify-between mb-3">
-        <span class="text-sm font-medium text-zinc-200">签到状态</span>
-        ${allSigned
-          ? '<span class="text-xs text-emerald-400">✓ 今日已全部签到</span>'
-          : `<button onclick="runSignIn()" class="rounded-lg bg-blue-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-600 transition-colors">立即签到</button>`
-        }
-      </div>
-      ${sceneList}
-    </div>`;
-}
-
-async function runSignIn() {
-  const btn = document.getElementById('signInBtn');
-  if (btn) { btn.disabled = true; btn.textContent = '签到中...'; }
-
-  try {
-    const params = selectedTokenId ? `?token_id=${selectedTokenId}` : '';
-    const r = await api('/sign-in' + params, { method: 'POST' });
-    if (r.ok) {
-      const results = r.result?.results || [];
-      const successCount = results.filter(s => s.sign_in_result === 'success').length;
-      alert(`签到成功！${successCount} 个场景已签到。`);
-      lastSignInStatus = null; // 清除缓存，强制刷新
-      runSignInStatus();
-    } else {
-      alert('签到失败: ' + (r.error || '未知错误'));
-    }
-  } catch (e) {
-    alert('签到失败: ' + e.message);
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '签到'; }
-  }
-}
-
-// ── 使用记录 ──
-
-async function runRecords() {
-  const el = document.getElementById('recordsResult');
-  el.innerHTML = '<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-zinc-400">正在查询使用记录...</p></div>';
-  try {
-    const params = selectedTokenId ? `?token_id=${selectedTokenId}` : '';
-    const r = await api('/usage-records' + params);
-    renderRecordsResult(r);
-  } catch (e) {
-    el.innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">查询失败: ${esc(e.message)}</p></div>`;
-  }
-}
-
-function renderRecordsResult(r) {
-  const el = document.getElementById('recordsResult');
-  if (!r.ok) {
-    el.innerHTML = `<div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5"><p class="text-sm text-red-400">${esc(r.error || '查询失败')}</p></div>`;
-    return;
-  }
-
-  const records = r.records?.records || [];
-  const tokenInfo = `<div class="text-xs text-zinc-500 mb-3">Token: ${esc(r.token_name || r.token_id)}</div>`;
-
-  if (records.length === 0) {
-    el.innerHTML = `${tokenInfo}
-      <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
-        <p class="text-sm text-zinc-400">暂无使用记录</p>
-      </div>`;
-    return;
-  }
-
-  const recordList = records.slice(0, 20).map(rec => {
-    const isIncrease = rec.consume_percentage?.startsWith('+');
-    const color = isIncrease ? 'text-emerald-400' : 'text-red-400';
-    return `
-      <tr class="border-b border-zinc-800">
-        <td class="py-2 text-xs text-zinc-400">${esc(rec.request_time || '-')}</td>
-        <td class="py-2 text-xs text-zinc-300">${esc(rec.scene_group_name_display || rec.scene_group_name || '-')}</td>
-        <td class="py-2 text-xs font-mono ${color}">${esc(rec.consume_percentage || '-')}</td>
-      </tr>`;
-  }).join('');
-
-  el.innerHTML = `${tokenInfo}
-    <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-5">
-      <div class="text-sm font-medium text-zinc-200 mb-3">最近使用记录</div>
-      <table class="w-full">
-        <thead>
-          <tr class="border-b border-zinc-700">
-            <th class="py-2 text-left text-xs text-zinc-500">时间</th>
-            <th class="py-2 text-left text-xs text-zinc-500">功能</th>
-            <th class="py-2 text-left text-xs text-zinc-500">用量</th>
-          </tr>
-        </thead>
-        <tbody>${recordList}</tbody>
-      </table>
-    </div>`;
 }
 
 function renderQuotaResult(r) {

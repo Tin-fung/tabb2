@@ -165,10 +165,18 @@ async def build_quota_overview(
     for token in enabled_tokens:
         token_id = token.get("id", "")
         token_name = token.get("name", "")
+        account_label = token_account_label(token.get("value", ""))
+        display_name = (
+            account_label
+            if account_label and is_generic_token_name(token_name)
+            else token_name
+        )
         info, client = await client_for_token(token_id)
         account = {
             "token_id": token_id,
             "token_name": token_name,
+            "account_label": account_label,
+            "display_name": display_name,
             "enabled": token.get("enabled", True),
             "status": token.get("status", "unknown"),
         }
@@ -190,6 +198,8 @@ async def build_quota_overview(
                 {
                     "token_id": token_id,
                     "token_name": token_name,
+                    "account_label": account_label,
+                    "display_name": display_name,
                     "ok": False,
                     "error": "client not available",
                     "records": [],
@@ -214,6 +224,8 @@ async def build_quota_overview(
                 {
                     "token_id": token_id,
                     "token_name": token_name,
+                    "account_label": account_label,
+                    "display_name": display_name,
                     "ok": True,
                     "records": (records or {}).get("records", []),
                 }
@@ -223,6 +235,8 @@ async def build_quota_overview(
                 {
                     "token_id": token_id,
                     "token_name": token_name,
+                    "account_label": account_label,
+                    "display_name": display_name,
                     "ok": False,
                     "error": str(e),
                     "records": [],
