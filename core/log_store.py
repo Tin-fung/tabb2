@@ -12,6 +12,7 @@ class LogEntry:
         "status",
         "duration",
         "error",
+        "native_tools",
     )
 
     def __init__(
@@ -22,6 +23,7 @@ class LogEntry:
         status: str = "pending",
         duration: float = 0,
         error: str = "",
+        native_tools: dict | None = None,
     ):
         self.timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         self.model = model
@@ -30,8 +32,17 @@ class LogEntry:
         self.status = status
         self.duration = round(duration, 2)
         self.error = error
+        self.native_tools = native_tools or {}
 
     def to_dict(self) -> dict:
+        native_tools = {
+            "native_tools_count": 0,
+            "native_tool_names": [],
+            "native_tools_status": [],
+            "native_tools_duration_ms": 0,
+            "native_tools_result_chars": 0,
+        }
+        native_tools.update(self.native_tools)
         return {
             "timestamp": self.timestamp,
             "model": self.model,
@@ -40,6 +51,7 @@ class LogEntry:
             "status": self.status,
             "duration": self.duration,
             "error": self.error,
+            **native_tools,
         }
 
 
