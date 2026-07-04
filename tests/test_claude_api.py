@@ -6,12 +6,15 @@ import routes.claude_api as claude_api
 
 
 class FakeConfig:
-    def __init__(self, api_key=""):
+    def __init__(self, api_key="", local_tools_enabled=False):
         self.api_key = api_key
+        self.local_tools_enabled = local_tools_enabled
 
     def get(self, *keys, default=None):
         if keys == ("proxy", "api_key"):
             return self.api_key
+        if keys == ("proxy", "local_tools_enabled"):
+            return self.local_tools_enabled
         return default
 
 
@@ -68,7 +71,7 @@ class ClaudeApiAuthTest(unittest.IsolatedAsyncioTestCase):
 
 
 class ClaudeApiToolPolicyTest(unittest.TestCase):
-    def test_tools_reject_uncertified_model(self):
+    def test_local_tools_reject_uncertified_model_when_fallback_enabled(self):
         body = {
             "tools": [
                 {
@@ -80,12 +83,49 @@ class ClaudeApiToolPolicyTest(unittest.TestCase):
         }
 
         with self.assertRaises(HTTPException) as ctx:
-            claude_api._apply_claude_tool_policy("GPT-5.5", body)
+            claude_api._apply_claude_tool_policy(
+                "GPT-5.5",
+                body,
+                local_fallback_enabled=True,
+            )
 
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("not certified", ctx.exception.detail)
 
-    def test_certified_model_keeps_tools_enabled(self):
+    def test_search_tool_degrades_to_native_enhanced(self):
+        body = {
+            "tools": [
+                {
+                    "name": "web_search",
+                    "description": "Search the web",
+                    "input_schema": {"type": "object", "properties": {}},
+                }
+            ]
+        }
+
+        selected = claude_api._apply_claude_tool_policy("DeepSeek-V4-Pro", body)
+
+        self.assertEqual(selected, [])
+        self.assertEqual(body["tools"], [])
+
+    def test_local_tool_rejects_when_fallback_disabled(self):
+        body = {
+            "tools": [
+                {
+                    "name": "Write",
+                    "description": "Write a file",
+                    "input_schema": {"type": "object", "properties": {}},
+                }
+            ]
+        }
+
+        with self.assertRaises(HTTPException) as ctx:
+            claude_api._apply_claude_tool_policy("DeepSeek-V4-Pro", body)
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("local tool mode is disabled", ctx.exception.detail)
+
+    def test_local_tool_allowed_when_fallback_enabled(self):
         tools = [
             {
                 "name": "Write",
@@ -95,7 +135,31 @@ class ClaudeApiToolPolicyTest(unittest.TestCase):
         ]
         body = {"tools": tools}
 
-        selected = claude_api._apply_claude_tool_policy("DeepSeek-V4-Pro", body)
+        selected = claude_api._apply_claude_tool_policy(
+            "DeepSeek-V4-Pro",
+            body,
+            local_fallback_enabled=True,
+        )
 
         self.assertEqual(selected, tools)
         self.assertEqual(body["tools"], tools)
+
+    def test_local_tools_header_or_config_enables_fallback(self):
+        old_cfg = claude_api._cfg
+        try:
+            claude_api._cfg = FakeConfig(local_tools_enabled=False)
+            self.assertTrue(
+                claude_api._local_tools_enabled_from_config_or_header(
+                    FakeRequest({"x-tabbit-local-tools": "true"})
+                )
+            )
+            self.assertFalse(
+                claude_api._local_tools_enabled_from_config_or_header(FakeRequest())
+            )
+
+            claude_api._cfg = FakeConfig(local_tools_enabled=True)
+            self.assertTrue(
+                claude_api._local_tools_enabled_from_config_or_header(FakeRequest())
+            )
+        finally:
+            claude_api._cfg = old_cfg

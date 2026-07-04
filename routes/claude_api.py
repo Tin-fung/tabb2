@@ -74,22 +74,41 @@ def init(token_manager: TokenManager, config: ConfigManager, log_store: LogStore
     _logs = log_store
 
 
-def _apply_claude_tool_policy(tabbit_model: str, body: dict) -> list[dict]:
+def _local_tools_enabled_from_config_or_header(request: Request) -> bool:
+    value = request.headers.get("x-tabbit-local-tools", "")
+    if value.strip().lower() in ("1", "true", "yes", "on"):
+        return True
+    return bool(_cfg and _cfg.get("proxy", "local_tools_enabled", default=False))
+
+
+def _apply_claude_tool_policy(
+    tabbit_model: str,
+    body: dict,
+    local_fallback_enabled: bool = False,
+) -> list[dict]:
     tools = body.get("tools", []) or []
     decision = decide_tool_mode(
         tabbit_model,
         has_tools=bool(tools),
         required=bool(tools),
+        tools=tools,
+        local_fallback_enabled=local_fallback_enabled,
     )
     if decision.reject:
         raise HTTPException(
             status_code=decision.reject_status,
             detail=decision.reject_detail,
         )
-    if not decision.local_tools_enabled:
-        body["tools"] = []
-        return []
-    return tools
+    if decision.native_equivalent_tools or decision.ignored_local_tools:
+        logger.info(
+            "claude tool policy: mode=%s local=%s native=%s ignored=%s",
+            decision.mode,
+            decision.local_tools_enabled,
+            decision.native_equivalent_tools,
+            decision.ignored_local_tools,
+        )
+    body["tools"] = decision.selected_tools or []
+    return decision.selected_tools or []
 
 
 async def _get_client_and_token(
@@ -429,7 +448,11 @@ async def claude_messages(request: Request):
     tabbit_model = resolve_model(body.get("model", "best"), get_registry(), default_model)
 
     # 工具调用准备
-    tools = _apply_claude_tool_policy(tabbit_model, body)
+    tools = _apply_claude_tool_policy(
+        tabbit_model,
+        body,
+        local_fallback_enabled=_local_tools_enabled_from_config_or_header(request),
+    )
     trigger_signal = random_trigger_signal() if tools else None
     body["_trigger_signal"] = trigger_signal
 
