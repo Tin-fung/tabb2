@@ -37,11 +37,13 @@ Live native-tool smoke against a running local server:
 TABBIT_ADMIN_PASSWORD='<admin-password>' \
   .venv/bin/python scripts/verify_native_tool_live.py \
     --model Default \
+    --protocol both \
+    --mode both \
     --proxy-api-key '<proxy-api-key>' \
     --json
 ```
 
-The live smoke drains an OpenAI-compatible streaming request, then verifies
+The live smoke can drain OpenAI/Claude streaming and non-streaming requests, then verifies
 `/api/admin/logs` or `/api/admin/status` contains native tool summary fields for
 `parallel_web_search`. Omit `--proxy-api-key` when local `config.json` already
 has `proxy.api_key`. It does not print admin or proxy credentials.
@@ -77,8 +79,7 @@ has `proxy.api_key`. It does not print admin or proxy credentials.
 
     在浏览器中打开 `http://localhost:8800/admin`。
 
-    -   默认管理员密码：`admin`
-    -   登录后，请务必在 **设置** 页面修改您的管理员密码。
+    首次启动会在控制台输出随机管理员密码。登录后，请务必在 **设置** 页面修改您的管理员密码。
 
 4.  **添加 Tabbit Token**
 
@@ -107,6 +108,8 @@ PORT=9900 docker compose up -d
 | 服务端口 | `server.port` | 服务监听的端口，默认为 `8800` |
 | 管理员密码 | `admin.password_hash` | 加密后的管理员密码 |
 | Tabbit API 地址 | `tabbit.base_url` | Tabbit Web API 的根地址 |
+| 上游 TLS 校验 | `tabbit.verify_ssl` | 默认为 `true`；仅本地抓包/调试时显式关闭 |
+| 可信反向代理 | `trusted_proxies` | CIDR/IP 列表；仅命中时才信任 `X-Forwarded-For` / `X-Real-IP` |
 | 代理 API Key | `proxy.api_key` | 为 Tabbit2API 设置全局 API Key；使用内置 Token 池时 OpenAI/Claude 兼容接口必须携带此 Key |
 | 全局 System Prompt | `proxy.system_prompt` | （可选）为所有 OpenAI 兼容请求注入的系统提示 |
 | Claude 默认模型 | `claude.default_model` | Claude 兼容模式下的默认模型 |

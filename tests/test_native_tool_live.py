@@ -2,6 +2,8 @@ import unittest
 
 from scripts.verify_native_tool_live import (
     admin_auth_headers,
+    build_check_plan,
+    build_parser,
     extract_log_items,
     find_native_tool_log,
     proxy_auth_headers,
@@ -23,6 +25,32 @@ class FakeConfig:
 
 
 class NativeToolLiveHelpersTest(unittest.TestCase):
+    def test_build_check_plan_expands_protocol_and_mode(self):
+        self.assertEqual(build_check_plan("openai", "stream"), ["openai_stream"])
+        self.assertEqual(
+            build_check_plan("openai", "both"),
+            ["openai_stream", "openai_non_stream"],
+        )
+        self.assertEqual(
+            build_check_plan("both", "non-stream"),
+            ["openai_non_stream", "claude_non_stream"],
+        )
+        self.assertEqual(
+            build_check_plan("both", "both"),
+            [
+                "openai_stream",
+                "openai_non_stream",
+                "claude_stream",
+                "claude_non_stream",
+            ],
+        )
+
+    def test_parser_accepts_protocol_and_mode_options(self):
+        args = build_parser().parse_args(["--protocol", "both", "--mode", "non-stream"])
+
+        self.assertEqual(args.protocol, "both")
+        self.assertEqual(args.mode, "non-stream")
+
     def test_proxy_auth_headers_use_configured_api_key(self):
         headers = proxy_auth_headers(FakeConfig(api_key="sk-proxy"))
 

@@ -471,6 +471,8 @@ The first backend implementation adds:
 TABBIT_ADMIN_PASSWORD='<admin-password>' \
   .venv/bin/python scripts/verify_native_tool_live.py \
     --model Default \
+    --protocol both \
+    --mode both \
     --proxy-api-key '<proxy-api-key>' \
     --json
 ```
@@ -481,6 +483,8 @@ TABBIT_ADMIN_PASSWORD='<admin-password>' \
 TABBIT_ADMIN_TOKEN='<admin-jwt>' \
   .venv/bin/python scripts/verify_native_tool_live.py \
     --model Default \
+    --protocol both \
+    --mode both \
     --proxy-api-key '<proxy-api-key>' \
     --json
 ```
@@ -488,9 +492,10 @@ TABBIT_ADMIN_TOKEN='<admin-jwt>' \
 脚本验证链路：
 
 1. 请求本地 `/health`。
-2. 通过 OpenAI 兼容 `/v1/chat/completions` 发起 streaming 搜索型 prompt。
+2. 按 `--protocol` / `--mode` 组合发起 OpenAI/Claude streaming 或 non-streaming 搜索型 prompt。
 3. 完整 drain SSE，等待 route 写入 request log。
 4. 查询 `/api/admin/logs`，并降级查 `/api/admin/status.recent_logs`。
 5. 断言 `native_tool_names` 包含 `parallel_web_search`、状态为 `success`、`native_tools_result_chars > 0`。
+6. non-streaming 响应额外断言不会把 Tabbit native tools 暴露成 OpenAI `tool_calls` 或 Claude `tool_use`。
 
 这个 smoke 需要真实运行中的 tabb2 服务、可用 Tabbit token，以及 admin 登录凭据；因此不并入普通 unittest。

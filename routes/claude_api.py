@@ -481,9 +481,11 @@ async def claude_messages(request: Request):
     full_text = ""
     start_time = time.time()
     error_msg = ""
+    native_tools = NativeToolAggregator()
 
     try:
         async for event in client.send_message(session_id, content, tabbit_model, references=references, task_name=task_name):
+            native_tools.consume(event["event"], event["data"], local_name_map=body.get("_tool_name_map", {}))
             if event["event"] == "message_chunk":
                 full_text += event["data"].get("content", "")
         if token_id and _tm:
@@ -504,6 +506,7 @@ async def claude_messages(request: Request):
                     status="success" if not error_msg else "error",
                     duration=duration,
                     error=error_msg,
+                    native_tools=native_tools.to_log_fields(),
                 )
             )
 

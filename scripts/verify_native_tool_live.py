@@ -2,8 +2,8 @@
 
 This verifies the live Native Tool Plane path against a running local server:
 
-  1. Drain an OpenAI-compatible streaming request that should trigger upstream
-     Tabbit native search.
+  1. Drain compatible API requests that should trigger upstream Tabbit native
+     search.
   2. Poll admin logs/status until native tool summary fields appear.
   3. Validate that the native tool executed upstream and was logged by tabb2.
 
@@ -11,7 +11,7 @@ The script intentionally avoids printing proxy/admin credentials.
 
 Usage:
   TABBIT_ADMIN_TOKEN=... .venv/bin/python scripts/verify_native_tool_live.py
-  TABBIT_ADMIN_PASSWORD=... .venv/bin/python scripts/verify_native_tool_live.py --json
+  TABBIT_ADMIN_PASSWORD=... .venv/bin/python scripts/verify_native_tool_live.py --protocol both --mode both --json
 """
 
 from __future__ import annotations
@@ -39,6 +39,19 @@ DEFAULT_PROMPT = (
     "Use your built-in web search to find one current AI or technology news item. "
     "Summarize the result in one short paragraph and mention that you searched."
 )
+CHECK_ORDER = (
+    "openai_stream",
+    "openai_non_stream",
+    "claude_stream",
+    "claude_non_stream",
+)
+
+
+def build_check_plan(protocol: str, mode: str) -> list[str]:
+    protocols = ("openai", "claude") if protocol == "both" else (protocol,)
+    modes = ("stream", "non-stream") if mode == "both" else (mode,)
+    selected = {f"{proto}_{m.replace('-', '_')}" for proto in protocols for m in modes}
+    return [check for check in CHECK_ORDER if check in selected]
 
 
 def normalize_server(server: str) -> str:
@@ -135,9 +148,12 @@ def find_native_tool_log(
     *,
     since_epoch: float | None = None,
     model: str | None = None,
+    stream: bool | None = None,
 ) -> dict | None:
     for log in logs:
         if model and log.get("model") != model:
+            continue
+        if stream is not None and log.get("stream") is not stream:
             continue
         if since_epoch is not None:
             log_ts = _parse_log_timestamp(log.get("timestamp"))
@@ -195,18 +211,21 @@ def _post_json_stream(
                 buffer += chunk.decode("utf-8", errors="replace")
                 while "\n\n" in buffer:
                     raw, buffer = buffer.split("\n\n", 1)
+                    event_type = None
                     data_lines = []
                     for line in raw.splitlines():
+                        if line.startswith("event: "):
+                            event_type = line[7:].strip()
                         if line.startswith("data: "):
                             data_lines.append(line[6:])
                     if not data_lines:
                         continue
                     data_str = "\n".join(data_lines)
                     if data_str == "[DONE]":
-                        events.append({"data": "[DONE]"})
+                        events.append({"event": event_type or "done", "data": "[DONE]"})
                         continue
                     try:
-                        events.append({"data": json.loads(data_str)})
+                        events.append({"event": event_type, "data": json.loads(data_str)})
                     except json.JSONDecodeError:
                         continue
     except urllib.error.HTTPError as e:
@@ -283,6 +302,7 @@ def wait_for_native_tool_log(
     poll_interval: float = 2.0,
     page_size: int = 50,
     http_timeout: int = 30,
+    stream: bool | None = None,
 ) -> dict:
     deadline = time.time() + timeout
     last_error = None
@@ -299,6 +319,7 @@ def wait_for_native_tool_log(
                 tool_name,
                 since_epoch=since_epoch,
                 model=model,
+                stream=stream,
             )
             if log:
                 return validate_native_tool_log(log, tool_name)
@@ -309,6 +330,7 @@ def wait_for_native_tool_log(
                 tool_name,
                 since_epoch=since_epoch,
                 model=model,
+                stream=stream,
             )
             if log:
                 return validate_native_tool_log(log, tool_name)
@@ -329,7 +351,7 @@ def verify_health(server: str, *, timeout: int = 10) -> dict:
     return health
 
 
-def trigger_openai_native_search(
+def trigger_openai_stream_native_search(
     server: str,
     model: str,
     prompt: str,
@@ -366,6 +388,120 @@ def trigger_openai_native_search(
     }
 
 
+def trigger_openai_non_stream_native_search(
+    server: str,
+    model: str,
+    prompt: str,
+    headers: dict,
+    *,
+    timeout: int = 180,
+) -> dict:
+    response = _request_json(
+        "POST",
+        f"{server}/v1/chat/completions",
+        body={
+            "model": model,
+            "stream": False,
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        headers=headers,
+        timeout=timeout,
+    )
+    choices = response.get("choices") or []
+    if not choices:
+        raise AssertionError("OpenAI non-stream response returned no choices")
+    message = choices[0].get("message") or {}
+    if "tool_calls" in message:
+        raise AssertionError("OpenAI non-stream response leaked native tool_calls")
+    return {
+        "finish_reason": choices[0].get("finish_reason"),
+        "response_has_tool_calls": False,
+        "text_preview": (message.get("content") or "")[:160],
+    }
+
+
+def _claude_headers(headers: dict) -> dict:
+    return {"anthropic-version": "2023-06-01", **headers}
+
+
+def trigger_claude_stream_native_search(
+    server: str,
+    model: str,
+    prompt: str,
+    headers: dict,
+    *,
+    timeout: int = 180,
+) -> dict:
+    events = _post_json_stream(
+        f"{server}/v1/messages",
+        {
+            "model": model,
+            "max_tokens": 1024,
+            "stream": True,
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        headers=_claude_headers(headers),
+        timeout=timeout,
+    )
+    names = [event.get("event") for event in events if event.get("event")]
+    if "message_start" not in names or "message_stop" not in names:
+        raise AssertionError(f"Claude stream missing message_start/message_stop: {names}")
+    text = ""
+    for event in events:
+        data = event.get("data")
+        if not isinstance(data, dict):
+            continue
+        delta = data.get("delta") or {}
+        text += delta.get("text") or ""
+    return {
+        "events": {name: names.count(name) for name in sorted(set(names))},
+        "text_preview": text[:160],
+    }
+
+
+def trigger_claude_non_stream_native_search(
+    server: str,
+    model: str,
+    prompt: str,
+    headers: dict,
+    *,
+    timeout: int = 180,
+) -> dict:
+    response = _request_json(
+        "POST",
+        f"{server}/v1/messages",
+        body={
+            "model": model,
+            "max_tokens": 1024,
+            "stream": False,
+            "messages": [{"role": "user", "content": prompt}],
+        },
+        headers=_claude_headers(headers),
+        timeout=timeout,
+    )
+    blocks = response.get("content") or []
+    if any(block.get("type") == "tool_use" for block in blocks if isinstance(block, dict)):
+        raise AssertionError("Claude non-stream response leaked native tool_use block")
+    text = "".join(
+        block.get("text", "")
+        for block in blocks
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
+    return {
+        "stop_reason": response.get("stop_reason"),
+        "response_has_tool_use": False,
+        "text_preview": text[:160],
+    }
+
+
+CHECK_RUNNERS = {
+    "openai_stream": (trigger_openai_stream_native_search, True),
+    "openai_non_stream": (trigger_openai_non_stream_native_search, False),
+    "claude_stream": (trigger_claude_stream_native_search, True),
+    "claude_non_stream": (trigger_claude_non_stream_native_search, False),
+}
+
+
 def run_live_smoke(args: argparse.Namespace) -> dict:
     server = normalize_server(args.server)
     cfg = ConfigManager()
@@ -380,28 +516,39 @@ def run_live_smoke(args: argparse.Namespace) -> dict:
     results = {
         "server": server,
         "model": args.model,
+        "protocol": args.protocol,
+        "mode": args.mode,
         "tool_name": args.tool_name,
         "checks": {},
     }
     results["checks"]["health"] = verify_health(server, timeout=args.http_timeout)
-    results["checks"]["openai_stream"] = trigger_openai_native_search(
-        server,
-        args.model,
-        args.prompt,
-        proxy_headers,
-        timeout=args.request_timeout,
-    )
-    results["checks"]["native_tool_log"] = wait_for_native_tool_log(
-        server,
-        admin_headers,
-        args.tool_name,
-        since_epoch=started_at,
-        model=args.model,
-        timeout=args.log_timeout,
-        poll_interval=args.poll_interval,
-        page_size=args.log_page_size,
-        http_timeout=args.http_timeout,
-    )
+    for check_name in build_check_plan(args.protocol, args.mode):
+        runner, expected_stream = CHECK_RUNNERS[check_name]
+        check_started_at = time.time()
+        request_summary = runner(
+            server,
+            args.model,
+            args.prompt,
+            proxy_headers,
+            timeout=args.request_timeout,
+        )
+        log_summary = wait_for_native_tool_log(
+            server,
+            admin_headers,
+            args.tool_name,
+            since_epoch=check_started_at,
+            model=args.model,
+            timeout=args.log_timeout,
+            poll_interval=args.poll_interval,
+            page_size=args.log_page_size,
+            http_timeout=args.http_timeout,
+            stream=expected_stream,
+        )
+        results["checks"][check_name] = {
+            "request": request_summary,
+            "native_tool_log": log_summary,
+        }
+    results["duration_sec"] = round(time.time() - started_at, 2)
     return results
 
 
@@ -411,6 +558,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--server", default=DEFAULT_SERVER)
     parser.add_argument("--model", default=DEFAULT_MODEL)
+    parser.add_argument("--protocol", choices=["openai", "claude", "both"], default="openai")
+    parser.add_argument("--mode", choices=["stream", "non-stream", "both"], default="stream")
     parser.add_argument("--tool-name", default=DEFAULT_TOOL_NAME)
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--admin-token", default=None)
