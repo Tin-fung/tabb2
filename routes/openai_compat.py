@@ -176,24 +176,44 @@ def _openai_tool_choice_required(tool_choice: Any = None) -> bool:
     return tool_choice == "required" or isinstance(tool_choice, dict)
 
 
+def _local_tools_enabled_from_config_or_header(header_value: str | None) -> bool:
+    if isinstance(header_value, str) and header_value.strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        return True
+    return bool(_cfg and _cfg.get("proxy", "local_tools_enabled", default=False))
+
+
 def _apply_openai_tool_policy(
     tabbit_model: str,
     tools: list[dict],
     tool_choice: Any = None,
+    local_fallback_enabled: bool = False,
 ) -> list[dict]:
     decision = decide_tool_mode(
         tabbit_model,
         has_tools=bool(tools),
         required=_openai_tool_choice_required(tool_choice),
+        tools=tools,
+        local_fallback_enabled=local_fallback_enabled,
     )
     if decision.reject:
         raise HTTPException(
             status_code=decision.reject_status,
             detail=decision.reject_detail,
         )
-    if not decision.local_tools_enabled:
-        return []
-    return tools
+    if decision.native_equivalent_tools or decision.ignored_local_tools:
+        logger.info(
+            "openai tool policy: mode=%s local=%s native=%s ignored=%s",
+            decision.mode,
+            decision.local_tools_enabled,
+            decision.native_equivalent_tools,
+            decision.ignored_local_tools,
+        )
+    return decision.selected_tools or []
 
 
 def _tool_result_text(message: ChatMessage) -> str:
@@ -898,14 +918,23 @@ async def _stream_handler(
 
 @router.post("/v1/chat/completions")
 async def chat_completions(
-    req: ChatCompletionRequest, authorization: str = Header(None)
+    req: ChatCompletionRequest,
+    authorization: str = Header(None),
+    x_tabbit_local_tools: str | None = Header(None),
 ):
     client, token_name, token_id = await _get_client_and_token(authorization)
     # 模型解析：与 Claude 端点共用 resolve_model，保证映射行为一致
     default_model = _cfg.get("claude", "default_model") if _cfg else None
     tabbit_model = resolve_model(req.model, get_registry(), default_model)
     tools = _select_openai_tools(req.tools, req.tool_choice)
-    tools = _apply_openai_tool_policy(tabbit_model, tools, req.tool_choice)
+    tools = _apply_openai_tool_policy(
+        tabbit_model,
+        tools,
+        req.tool_choice,
+        local_fallback_enabled=_local_tools_enabled_from_config_or_header(
+            x_tabbit_local_tools
+        ),
+    )
     trigger_signal = random_trigger_signal() if tools else None
     name_map = build_tool_name_map(tools) if tools else {}
     content, references, task_name = _build_content(

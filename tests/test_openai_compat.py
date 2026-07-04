@@ -6,12 +6,15 @@ import routes.openai_compat as openai_compat
 
 
 class FakeConfig:
-    def __init__(self, api_key=""):
+    def __init__(self, api_key="", local_tools_enabled=False):
         self.api_key = api_key
+        self.local_tools_enabled = local_tools_enabled
 
     def get(self, *keys, default=None):
         if keys == ("proxy", "api_key"):
             return self.api_key
+        if keys == ("proxy", "local_tools_enabled"):
+            return self.local_tools_enabled
         return default
 
 
@@ -94,8 +97,8 @@ class OpenAICompatToolChoiceTest(unittest.TestCase):
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("unknown tool", ctx.exception.detail.lower())
 
-    def test_required_tools_reject_uncertified_model(self):
-        tools = [function_tool("search")]
+    def test_required_local_tools_reject_uncertified_model(self):
+        tools = [function_tool("Write")]
         normalized = openai_compat._select_openai_tools(tools, "required")
 
         with self.assertRaises(HTTPException) as ctx:
@@ -103,6 +106,7 @@ class OpenAICompatToolChoiceTest(unittest.TestCase):
                 "GPT-5.5",
                 normalized,
                 "required",
+                local_fallback_enabled=True,
             )
 
         self.assertEqual(ctx.exception.status_code, 400)
@@ -120,7 +124,7 @@ class OpenAICompatToolChoiceTest(unittest.TestCase):
 
         self.assertEqual(selected, [])
 
-    def test_certified_model_keeps_tools_enabled(self):
+    def test_required_search_tool_degrades_to_native_enhanced(self):
         tools = [function_tool("search")]
         normalized = openai_compat._select_openai_tools(tools, "required")
 
@@ -130,4 +134,43 @@ class OpenAICompatToolChoiceTest(unittest.TestCase):
             "required",
         )
 
+        self.assertEqual(selected, [])
+
+    def test_required_local_tool_rejects_when_fallback_disabled(self):
+        tools = [function_tool("Write")]
+        normalized = openai_compat._select_openai_tools(tools, "required")
+
+        with self.assertRaises(HTTPException) as ctx:
+            openai_compat._apply_openai_tool_policy(
+                "DeepSeek-V4-Pro",
+                normalized,
+                "required",
+            )
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("local tool mode is disabled", ctx.exception.detail)
+
+    def test_required_local_tool_allowed_when_header_enables_fallback(self):
+        tools = [function_tool("Write")]
+        normalized = openai_compat._select_openai_tools(tools, "required")
+
+        selected = openai_compat._apply_openai_tool_policy(
+            "DeepSeek-V4-Pro",
+            normalized,
+            "required",
+            local_fallback_enabled=True,
+        )
+
         self.assertEqual(selected, normalized)
+
+    def test_local_tools_header_or_config_enables_fallback(self):
+        old_cfg = openai_compat._cfg
+        try:
+            openai_compat._cfg = FakeConfig(local_tools_enabled=False)
+            self.assertTrue(openai_compat._local_tools_enabled_from_config_or_header("true"))
+            self.assertFalse(openai_compat._local_tools_enabled_from_config_or_header(None))
+
+            openai_compat._cfg = FakeConfig(local_tools_enabled=True)
+            self.assertTrue(openai_compat._local_tools_enabled_from_config_or_header(None))
+        finally:
+            openai_compat._cfg = old_cfg
