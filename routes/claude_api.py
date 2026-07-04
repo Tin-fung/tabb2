@@ -20,6 +20,7 @@ from core.token_manager import TokenManager
 from core.log_store import LogStore, LogEntry
 from core.model_registry import get_registry
 from core.tool_events import NativeToolAggregator
+from core.tool_policy import decide_tool_mode
 from core.claude_compat import (
     random_trigger_signal,
     map_claude_to_content,
@@ -71,6 +72,24 @@ def init(token_manager: TokenManager, config: ConfigManager, log_store: LogStore
     _tm = token_manager
     _cfg = config
     _logs = log_store
+
+
+def _apply_claude_tool_policy(tabbit_model: str, body: dict) -> list[dict]:
+    tools = body.get("tools", []) or []
+    decision = decide_tool_mode(
+        tabbit_model,
+        has_tools=bool(tools),
+        required=bool(tools),
+    )
+    if decision.reject:
+        raise HTTPException(
+            status_code=decision.reject_status,
+            detail=decision.reject_detail,
+        )
+    if not decision.local_tools_enabled:
+        body["tools"] = []
+        return []
+    return tools
 
 
 async def _get_client_and_token(
@@ -410,7 +429,7 @@ async def claude_messages(request: Request):
     tabbit_model = resolve_model(body.get("model", "best"), get_registry(), default_model)
 
     # 工具调用准备
-    tools = body.get("tools", [])
+    tools = _apply_claude_tool_policy(tabbit_model, body)
     trigger_signal = random_trigger_signal() if tools else None
     body["_trigger_signal"] = trigger_signal
 

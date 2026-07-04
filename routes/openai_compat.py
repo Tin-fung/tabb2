@@ -16,6 +16,7 @@ from core.log_store import LogStore, LogEntry
 from core.config import ConfigManager
 from core.model_registry import get_registry
 from core.tool_events import NativeToolAggregator
+from core.tool_policy import decide_tool_mode
 from core.claude_compat import (
     MAX_CONTENT_LEN,
     ToolifyParser,
@@ -169,6 +170,30 @@ def _select_openai_tools(tools: list[dict] | None, tool_choice: Any = None) -> l
         raise HTTPException(status_code=400, detail=f"unknown tool in tool_choice: {name}")
 
     raise HTTPException(status_code=400, detail="unsupported tool_choice")
+
+
+def _openai_tool_choice_required(tool_choice: Any = None) -> bool:
+    return tool_choice == "required" or isinstance(tool_choice, dict)
+
+
+def _apply_openai_tool_policy(
+    tabbit_model: str,
+    tools: list[dict],
+    tool_choice: Any = None,
+) -> list[dict]:
+    decision = decide_tool_mode(
+        tabbit_model,
+        has_tools=bool(tools),
+        required=_openai_tool_choice_required(tool_choice),
+    )
+    if decision.reject:
+        raise HTTPException(
+            status_code=decision.reject_status,
+            detail=decision.reject_detail,
+        )
+    if not decision.local_tools_enabled:
+        return []
+    return tools
 
 
 def _tool_result_text(message: ChatMessage) -> str:
@@ -880,6 +905,7 @@ async def chat_completions(
     default_model = _cfg.get("claude", "default_model") if _cfg else None
     tabbit_model = resolve_model(req.model, get_registry(), default_model)
     tools = _select_openai_tools(req.tools, req.tool_choice)
+    tools = _apply_openai_tool_policy(tabbit_model, tools, req.tool_choice)
     trigger_signal = random_trigger_signal() if tools else None
     name_map = build_tool_name_map(tools) if tools else {}
     content, references, task_name = _build_content(
