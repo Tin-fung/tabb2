@@ -19,6 +19,7 @@ from core.tabbit_client import TabbitClient, resolve_model
 from core.token_manager import TokenManager
 from core.log_store import LogStore, LogEntry
 from core.model_registry import get_registry
+from core.tool_events import NativeToolAggregator
 from core.claude_compat import (
     random_trigger_signal,
     map_claude_to_content,
@@ -84,6 +85,8 @@ async def _get_client_and_token(
     bearer = auth_header.replace("Bearer ", "") if auth_header.startswith("Bearer ") else auth_header
 
     if _tm and _tm.has_tokens:
+        if not api_key:
+            raise HTTPException(status_code=401, detail="proxy api key required")
         if api_key and not hmac.compare_digest(bearer, api_key):
             raise HTTPException(status_code=401, detail="invalid api key")
         token_info, client = await _tm.get_next()
@@ -232,6 +235,7 @@ async def _stream_claude_response(
     input_tokens = _estimate_input_tokens(body)
 
     writer = ClaudeSSEWriter(request_id, model, input_tokens)
+    native_tools = NativeToolAggregator()
 
     # 解析器配置
     tools = body.get("tools", [])
@@ -285,6 +289,7 @@ async def _stream_claude_response(
         async for event in client.send_message(session_id, content, tabbit_model, references=references, task_name=task_name):
             et = event["event"]
             ed = event["data"]
+            native_tools.consume(et, ed, local_name_map=name_map)
 
             if et == "message_chunk" and "content" in ed:
                 text = ed["content"]
@@ -384,6 +389,7 @@ async def _stream_claude_response(
                     status="success" if not error_msg else "error",
                     duration=duration,
                     error=error_msg,
+                    native_tools=native_tools.to_log_fields(),
                 )
             )
 
