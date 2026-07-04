@@ -729,9 +729,9 @@ def _parse_tool_delta_event(ed: dict, name_map: dict[str, str] | None) -> dict |
         or tool_call.get("name")
         or ""
     )
-    if name_map and alias_name and alias_name not in name_map:
+    if not name_map or not alias_name or alias_name not in name_map:
         return None
-    name = (name_map or {}).get(alias_name, alias_name)
+    name = name_map[alias_name]
     arguments_delta = fn.get("arguments")
     if arguments_delta is None:
         arguments_delta = ed.get("arguments")

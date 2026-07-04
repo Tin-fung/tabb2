@@ -42,6 +42,41 @@ class FakeClient:
         yield {"event": "finish", "data": {}}
 
 
+class FakeNativeDeltaClient:
+    async def create_chat_session(self):
+        return "session-1"
+
+    async def send_message(self, *args, **kwargs):
+        yield {
+            "event": "message_tool_call_delta",
+            "data": {
+                "id": "call_native",
+                "type": "function",
+                "function": {
+                    "name": "parallel_web_search",
+                    "arguments": '{"query":"today tech news"}',
+                },
+            },
+        }
+        yield {
+            "event": "tool_start",
+            "data": {
+                "tool_call_id": "call_native",
+                "tool_call_name": "parallel_web_search",
+            },
+        }
+        yield {
+            "event": "tool_finish",
+            "data": {
+                "tool_call_id": "call_native",
+                "tool_call_name": "parallel_web_search",
+                "content": "search result text",
+            },
+        }
+        yield {"event": "message_chunk", "data": {"content": "Here is the answer."}}
+        yield {"event": "finish", "data": {}}
+
+
 class FakeLocalToolClient:
     async def create_chat_session(self):
         return "session-1"
@@ -146,6 +181,29 @@ class OpenAINativeToolsTest(unittest.IsolatedAsyncioTestCase):
         log_data = openai_compat._logs.entries[0].to_dict()
 
         self.assertNotIn('"tool_calls"', stream)
+        self.assertIn("Here is the answer.", stream)
+        self.assertEqual(log_data["native_tools_count"], 1)
+        self.assertEqual(log_data["native_tool_names"], ["parallel_web_search"])
+
+    async def test_native_delta_tool_is_logged_but_not_emitted_as_openai_tool_call(self):
+        chunks = [
+            line
+            async for line in openai_compat._stream_handler(
+                FakeNativeDeltaClient(),
+                "session-1",
+                "search",
+                "DeepSeek-V4-Pro",
+                "gpt-proxy",
+                "chatcmpl-test",
+                "primary",
+                "",
+            )
+        ]
+        stream = "".join(chunks)
+        log_data = openai_compat._logs.entries[0].to_dict()
+
+        self.assertNotIn('"tool_calls"', stream)
+        self.assertNotIn("parallel_web_search", stream)
         self.assertIn("Here is the answer.", stream)
         self.assertEqual(log_data["native_tools_count"], 1)
         self.assertEqual(log_data["native_tool_names"], ["parallel_web_search"])
