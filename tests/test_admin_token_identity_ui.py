@@ -36,3 +36,20 @@ class AdminTokenIdentityUiTest(unittest.TestCase):
         self.assertIn("testToken(${jsArg(t.id)})", html)
         self.assertIn("deleteToken(${jsArg(t.id)}, ${jsArg(t.name)})", html)
         self.assertIn("saveGoogleToken(${jsArg(name)}, ${jsArg(data.token_value)})", html)
+
+    def test_tokens_table_shows_health_metadata(self):
+        html = STATIC_INDEX.read_text(encoding="utf-8")
+
+        self.assertIn("t.cooldown_until", html)
+        self.assertIn("t.expires_at", html)
+        self.assertIn("t.last_status_code", html)
+        self.assertIn("t.last_error", html)
+        self.assertIn("冷却至", html)
+        self.assertIn("过期时间", html)
+        self.assertIn("最近错误", html)
+
+    def test_tokens_table_shows_needs_login_state(self):
+        html = STATIC_INDEX.read_text(encoding="utf-8")
+
+        self.assertIn("needs_login", html)
+        self.assertIn("需要重新登录", html)

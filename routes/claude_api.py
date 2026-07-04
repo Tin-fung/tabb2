@@ -74,6 +74,14 @@ def init(token_manager: TokenManager, config: ConfigManager, log_store: LogStore
     _logs = log_store
 
 
+def _refresh_token_from_client(token_id: str, client: TabbitClient) -> None:
+    if not token_id or not _tm:
+        return
+    refresher = getattr(_tm, "refresh_token_from_client", None)
+    if callable(refresher):
+        refresher(token_id, client)
+
+
 def _local_tools_enabled_from_config_or_header(request: Request) -> bool:
     value = request.headers.get("x-tabbit-local-tools", "")
     if value.strip().lower() in ("1", "true", "yes", "on"):
@@ -404,12 +412,13 @@ async def _stream_claude_response(
                 yield line
 
         if token_id and _tm:
+            _refresh_token_from_client(token_id, client)
             _tm.report_success(token_id)
 
     except Exception as e:
         error_msg = str(e)
         if token_id and _tm:
-            _tm.report_error(token_id)
+            _tm.report_error(token_id, e)
         # 尝试发送错误后仍然关闭流
         parser.finish()
         final_events = _filter_tool_events(parser.consume_events())
@@ -467,9 +476,10 @@ async def claude_messages(request: Request):
     # 创建聊天会话
     try:
         session_id = await client.create_chat_session()
+        _refresh_token_from_client(token_id, client)
     except Exception as e:
         if token_id and _tm:
-            _tm.report_error(token_id)
+            _tm.report_error(token_id, e)
         if _logs:
             _logs.add(
                 LogEntry(
@@ -512,11 +522,12 @@ async def claude_messages(request: Request):
             if event["event"] == "message_chunk":
                 full_text += event["data"].get("content", "")
         if token_id and _tm:
+            _refresh_token_from_client(token_id, client)
             _tm.report_success(token_id)
     except Exception as e:
         error_msg = str(e)
         if token_id and _tm:
-            _tm.report_error(token_id)
+            _tm.report_error(token_id, e)
         raise HTTPException(status_code=502, detail=str(e))
     finally:
         duration = time.time() - start_time

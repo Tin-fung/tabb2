@@ -16,6 +16,22 @@ import httpx
 
 logger = logging.getLogger("tabbit2openai")
 
+
+class TabbitAPIError(Exception):
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        headers: dict | httpx.Headers | None = None,
+        code: int | str | None = None,
+    ):
+        super().__init__(message)
+        self.status_code = status_code
+        self.headers = headers or {}
+        self.code = code
+
+
 # ── unique-uuid 生成器（移植自 web 端 eN 算法） ──
 # 前端把"是否默认浏览器"状态编码进 unique-uuid 的第 5 位：
 #   - 默认浏览器 → 第 5 位 = "1"
@@ -143,7 +159,7 @@ class TabbitClient:
     def __init__(self, token_str: str, base_url: str | None = None, client_id: str | None = None, browser_version: str | None = None, sparkle_version: int | None = None, default_browser: bool = True, verify_ssl: bool = False):
         parts = token_str.split("|")
         self.jwt_token = parts[0]
-        self.next_auth = parts[1] if len(parts) > 1 else None
+        self.next_auth = parts[1] if len(parts) > 1 and parts[1] else None
         self.device_id = parts[2] if len(parts) > 2 else str(uuid.uuid4())
         self.user_id = self._extract_user_id(self.jwt_token)
         self.base_url = base_url or "https://web.tabbit.ai"
@@ -169,6 +185,36 @@ class TabbitClient:
             follow_redirects=True,
             verify=verify_ssl,
         )
+
+    def update_auth_token_value(self, token_str: str) -> None:
+        parts = (token_str or "").split("|")
+        self.jwt_token = parts[0] if parts else ""
+        self.next_auth = parts[1] if len(parts) > 1 and parts[1] else None
+        if len(parts) > 2 and parts[2]:
+            self.device_id = parts[2]
+        self.user_id = self._extract_user_id(self.jwt_token)
+
+    def _client_cookie_value(self, name: str) -> str | None:
+        try:
+            value = self.client.cookies.get(name)
+            if value:
+                return value
+        except Exception:
+            pass
+        for cookie in self.client.cookies.jar:
+            if cookie.name == name and cookie.value:
+                return cookie.value
+        return None
+
+    def export_auth_cookies(self) -> dict:
+        cookies = {}
+        jwt_token = self._client_cookie_value("token")
+        next_auth = self._client_cookie_value("next-auth.session-token")
+        if jwt_token:
+            cookies["token"] = jwt_token
+        if next_auth:
+            cookies["next-auth.session-token"] = next_auth
+        return cookies
 
     def _extract_user_id(self, token: str) -> str:
         try:
@@ -714,8 +760,10 @@ class TabbitClient:
             self._sync_server_time(resp)
             if resp.status_code != 200:
                 body = await resp.aread()
-                raise Exception(
-                    f"Tabbit API error {resp.status_code}: {body.decode()}"
+                raise TabbitAPIError(
+                    f"Tabbit API error {resp.status_code}: {body.decode()}",
+                    status_code=resp.status_code,
+                    headers=resp.headers,
                 )
 
             # 收集首个事件，用于诊断 492/493（身份/版本校验失败）
@@ -743,7 +791,9 @@ class TabbitClient:
                                 "<invoke" in content or "[Tools]" in content,
                                 model, session_id, headers.get("unique-uuid", "")[:8],
                             )
-                        raise Exception(
-                            f"Tabbit upstream error {code}: {msg}"
+                        raise TabbitAPIError(
+                            f"Tabbit upstream error {code}: {msg}",
+                            status_code=code if isinstance(code, int) else None,
+                            code=code,
                         )
                     yield {"event": current_event, "data": data}

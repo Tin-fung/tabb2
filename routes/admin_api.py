@@ -11,7 +11,7 @@ from typing import Optional
 
 from core.config import ConfigManager, hash_password
 from core.auth import create_jwt, verify_password, require_admin
-from core.token_manager import TokenManager
+from core.token_manager import TokenManager, token_expiration_metadata
 from core.tabbit_client import TabbitClient, _gen_unique_uuid
 from core.log_store import LogStore
 
@@ -303,6 +303,8 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
                 if account_label and is_generic_token_name(info.get("name"))
                 else info.get("name", "")
             )
+            info.update(token_expiration_metadata(v))
+            info["needs_login"] = info["status"] == "needs_login"
             # 安全脱敏：只显示最后 4 位（类似信用卡显示方式）
             info["value_preview"] = "***" + v[-4:] if len(v) > 4 else "***"
             del info["value"]

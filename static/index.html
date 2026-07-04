@@ -34,6 +34,7 @@ tailwind.config = {
   .status-error { background: #ef4444; box-shadow: 0 0 6px #ef444488; }
   .status-unknown { background: #71717a; }
   .status-cooldown { background: #eab308; box-shadow: 0 0 6px #eab30888; }
+  .status-needs_login { background: #f97316; box-shadow: 0 0 6px #f9731688; }
   .fade-in { animation: fadeIn .2s ease-out; }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
   input:focus, select:focus, textarea:focus { outline: none; box-shadow: 0 0 0 2px hsl(240 4.9% 83.9% / 0.3); }
@@ -1509,6 +1510,11 @@ function tokenMetaLine(t) {
   const parts = [];
   if (t.name && t.display_name && t.name !== t.display_name) parts.push(`别名: ${esc(t.name)}`);
   if (t.account_label && t.account_label !== tokenDisplayName(t)) parts.push(`账号: ${esc(t.account_label)}`);
+  if (t.needs_login || t.status === 'needs_login') parts.push('需要重新登录');
+  if (t.expires_at) parts.push(`${t.expired ? '已过期' : '过期时间'}: ${esc(fmtTime(t.expires_at))}`);
+  if (t.cooldown_until) parts.push(`冷却至: ${esc(fmtTime(t.cooldown_until))}`);
+  if (t.last_status_code) parts.push(`HTTP ${esc(t.last_status_code)}`);
+  if (t.last_error) parts.push(`最近错误: ${esc(String(t.last_error).slice(0, 80))}`);
   return parts.join(' · ');
 }
 

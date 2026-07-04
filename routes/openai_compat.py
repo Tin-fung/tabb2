@@ -74,6 +74,14 @@ def init(token_manager: TokenManager, config: ConfigManager, log_store: LogStore
     _logs = log_store
 
 
+def _refresh_token_from_client(token_id: str, client: TabbitClient) -> None:
+    if not token_id or not _tm:
+        return
+    refresher = getattr(_tm, "refresh_token_from_client", None)
+    if callable(refresher):
+        refresher(token_id, client)
+
+
 class ChatMessage(BaseModel):
     # content 兼容字符串和多模态数组（Cherry Studio 等客户端可能发数组）
     model_config = {"extra": "ignore"}
@@ -889,17 +897,19 @@ async def _stream_handler(
                     fallback_model,
                 )
                 fallback_session_id = await client.create_chat_session()
+                _refresh_token_from_client(token_id, client)
                 async for line in run_attempt(fallback_session_id, fallback_model):
                     yield line
         for line in writer.handle_events([{"type": "end"}]):
             yield line
         yield "data: [DONE]\n\n"
         if token_id:
+            _refresh_token_from_client(token_id, client)
             _tm.report_success(token_id)
     except Exception as e:
         error_msg = str(e)
         if token_id:
-            _tm.report_error(token_id)
+            _tm.report_error(token_id, e)
         raise
     finally:
         duration = time.time() - start
@@ -947,9 +957,10 @@ async def chat_completions(
 
     try:
         session_id = await client.create_chat_session()
+        _refresh_token_from_client(token_id, client)
     except Exception as e:
         if token_id:
-            _tm.report_error(token_id)
+            _tm.report_error(token_id, e)
         _logs.add(
             LogEntry(
                 model=req.model,
@@ -1071,11 +1082,12 @@ async def chat_completions(
                     }
                 )
         if token_id:
+            _refresh_token_from_client(token_id, client)
             _tm.report_success(token_id)
     except Exception as e:
         error_msg = str(e)
         if token_id:
-            _tm.report_error(token_id)
+            _tm.report_error(token_id, e)
         raise HTTPException(status_code=502, detail=str(e))
     finally:
         duration = time.time() - start
