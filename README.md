@@ -17,6 +17,14 @@
 - **流式与非流式**：完整支持流式（Streaming）和非流式响应，满足不同应用场景的需求。
 - **工具调用（Tool Use）**：在 Claude 兼容模式下，支持 Anthropic 的工具调用（Tool Use）和 `<thinking>` 块，赋能更复杂的 Agent 应用。
 
+### Tool behavior
+
+tabb2 uses a Dual Tool Plane model:
+
+- Local client tools from Claude Code, opencode, or OpenAI tool callers are best-effort and model-gated.
+- Tabbit native tools such as search or browser tasks execute upstream inside Tabbit and are recorded as native tool activity.
+- Native Tabbit tools are not exposed as local Bash/Write/Edit/Read tool calls.
+
 ## 🚀 快速开始
 
 推荐使用 Docker 和 Docker Compose 进行部署，这是最简单、最可靠的方式。
@@ -78,7 +86,7 @@ PORT=9900 docker compose up -d
 | 服务端口 | `server.port` | 服务监听的端口，默认为 `8800` |
 | 管理员密码 | `admin.password_hash` | 加密后的管理员密码 |
 | Tabbit API 地址 | `tabbit.base_url` | Tabbit Web API 的根地址 |
-| 代理 API Key | `proxy.api_key` | （可选）为 Tabbit2API 设置一个全局 API Key，客户端请求时必须携带此 Key |
+| 代理 API Key | `proxy.api_key` | 为 Tabbit2API 设置全局 API Key；使用内置 Token 池时 OpenAI/Claude 兼容接口必须携带此 Key |
 | 全局 System Prompt | `proxy.system_prompt` | （可选）为所有 OpenAI 兼容请求注入的系统提示 |
 | Claude 默认模型 | `claude.default_model` | Claude 兼容模式下的默认模型 |
 | 日志最大条目 | `logging.max_entries` | 在内存中保留的最新日志数量 |
@@ -88,16 +96,16 @@ PORT=9900 docker compose up -d
 ### OpenAI 兼容 API
 
 - **端点**：`POST /v1/chat/completions`
-- **鉴权**：`Authorization: Bearer <your_proxy_api_key>` (如果在配置中设置了 `proxy.api_key`)
+- **鉴权**：`Authorization: Bearer <your_proxy_api_key>`（使用内置 Token 池时必填）
 
 **示例请求 (`curl`)**
 
 ```bash
 curl http://localhost:8800/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearar sk-your-proxy-key" \
-  -d 
-  "model": "best",
+  -H "Authorization: Bearer sk-your-proxy-key" \
+  -d '{
+    "model": "best",
     "messages": [
       {
         "role": "user",
@@ -111,7 +119,7 @@ curl http://localhost:8800/v1/chat/completions \
 ### Anthropic Claude 兼容 API
 
 - **端点**：`POST /v1/messages`
-- **鉴权**：`x-api-key: <your_proxy_api_key>` (如果在配置中设置了 `proxy.api_key`)
+- **鉴权**：`x-api-key: <your_proxy_api_key>`（使用内置 Token 池时必填）
 
 **示例请求 (`curl`)**
 

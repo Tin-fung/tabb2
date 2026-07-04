@@ -443,3 +443,21 @@ export ANTHROPIC_MODEL=DeepSeek-V4-Pro
 
 # 或直接用网关 pipeline 复跑本次矩阵逻辑（见本次排查过程）
 ```
+
+---
+
+## 2026-07-04 Dual Tool Plane direction
+
+The project now separates tool behavior into two planes:
+
+- Local Tool Plane: `cc_` aliased client tools returned to Claude/OpenAI clients as tool calls.
+- Tabbit Native Tool Plane: upstream Tabbit tools such as `parallel_web_search` collected from SSE lifecycle events and logged as native tool activity.
+
+Native Tabbit tools are not converted into local client tool calls, because they execute on Tabbit upstream rather than in Claude Code/opencode.
+
+The first backend implementation adds:
+
+- Shared native tool event classification and aggregation.
+- Request log fields for native tool count, names, status, duration, and result size.
+- Claude/OpenAI route handling that records native tools without exposing them as client-executable tools.
+- A model capability gate so required local tool mode is limited to certified models.
