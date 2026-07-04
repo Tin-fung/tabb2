@@ -461,3 +461,4 @@ The first backend implementation adds:
 - Request log fields for native tool count, names, status, duration, and result size.
 - Claude/OpenAI route handling that records native tools without exposing them as client-executable tools.
 - A model capability gate so required local tool mode is limited to certified models.
+- Offline native tool replay smoke: `.venv/bin/python scripts/verify_native_tool_replay.py`.
