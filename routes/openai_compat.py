@@ -15,6 +15,7 @@ from core.token_manager import TokenManager
 from core.log_store import LogStore, LogEntry
 from core.config import ConfigManager
 from core.model_registry import get_registry
+from core.tool_events import NativeToolAggregator
 from core.claude_compat import (
     MAX_CONTENT_LEN,
     ToolifyParser,
@@ -140,6 +141,36 @@ def _normalize_openai_tools(tools: list[dict] | None) -> list[dict]:
     return normalized
 
 
+def _select_openai_tools(tools: list[dict] | None, tool_choice: Any = None) -> list[dict]:
+    """Normalize OpenAI tools and apply the subset of tool_choice we can enforce.
+
+    Tabbit does not expose a native OpenAI tool_choice control, so the adapter
+    enforces choices by deciding which tool definitions are shown to the model.
+    """
+    normalized = _normalize_openai_tools(tools)
+    if not normalized:
+        if isinstance(tool_choice, dict):
+            raise HTTPException(status_code=400, detail="unknown tool in tool_choice")
+        return []
+
+    if tool_choice in (None, "auto", "required"):
+        return normalized
+    if tool_choice == "none":
+        return []
+
+    if isinstance(tool_choice, dict):
+        if tool_choice.get("type") != "function":
+            raise HTTPException(status_code=400, detail="unsupported tool_choice")
+        fn = tool_choice.get("function") or {}
+        name = fn.get("name")
+        for tool in normalized:
+            if tool.get("name") == name:
+                return [tool]
+        raise HTTPException(status_code=400, detail=f"unknown tool in tool_choice: {name}")
+
+    raise HTTPException(status_code=400, detail="unsupported tool_choice")
+
+
 def _tool_result_text(message: ChatMessage) -> str:
     content = message.text_content()
     status = "error" if content.lower().startswith(("error", "failed")) else "success"
@@ -243,10 +274,11 @@ async def _get_client_and_token(
     if _tm.has_tokens:
         # 校验 proxy api_key（使用 hmac.compare_digest 防止时序攻击）
         api_key = _cfg.get("proxy", "api_key")
-        if api_key:
-            bearer = (authorization or "").replace("Bearer ", "")
-            if not hmac.compare_digest(bearer, api_key):
-                raise HTTPException(status_code=401, detail="invalid api key")
+        if not api_key:
+            raise HTTPException(status_code=401, detail="proxy api key required")
+        bearer = (authorization or "").replace("Bearer ", "")
+        if not hmac.compare_digest(bearer, api_key):
+            raise HTTPException(status_code=401, detail="invalid api key")
         token_info, client = await _tm.get_next()
         if token_info is None:
             raise HTTPException(
@@ -726,11 +758,13 @@ async def _stream_handler(
     )
     required = _required_by_name(tools or [])
     properties = _properties_by_name(tools or [])
+    native_tools = NativeToolAggregator()
 
     async def run_attempt(attempt_session_id: str, attempt_model: str):
         parser = ToolifyParser(trigger_signal, False, name_map=name_map or {})
         async for event in client.send_message(attempt_session_id, content, attempt_model, references=references, task_name=task_name):
             et, ed = event["event"], event["data"]
+            native_tools.consume(et, ed, local_name_map=name_map or {})
             if et == "message_chunk" and "content" in ed:
                 text = ed["content"]
                 if trigger_signal:
@@ -761,7 +795,7 @@ async def _stream_handler(
                 for idx, tc in enumerate(ed.get("tool_calls", [])):
                     fn = tc.get("function", {})
                     alias_name = fn.get("name", "")
-                    if name_map and alias_name not in name_map:
+                    if not name_map or alias_name not in name_map:
                         continue
                     orig_name = (name_map or {}).get(alias_name, alias_name)
                     try:
@@ -832,6 +866,7 @@ async def _stream_handler(
                 status="success" if not error_msg else "error",
                 duration=duration,
                 error=error_msg,
+                native_tools=native_tools.to_log_fields(),
             )
         )
 
@@ -844,7 +879,7 @@ async def chat_completions(
     # 模型解析：与 Claude 端点共用 resolve_model，保证映射行为一致
     default_model = _cfg.get("claude", "default_model") if _cfg else None
     tabbit_model = resolve_model(req.model, get_registry(), default_model)
-    tools = _normalize_openai_tools(req.tools)
+    tools = _select_openai_tools(req.tools, req.tool_choice)
     trigger_signal = random_trigger_signal() if tools else None
     name_map = build_tool_name_map(tools) if tools else {}
     content, references, task_name = _build_content(
