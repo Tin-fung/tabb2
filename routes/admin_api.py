@@ -1,6 +1,9 @@
 import uuid
 import time
 import logging
+import base64
+import json
+import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -54,6 +57,73 @@ class GoogleLoginRequest(BaseModel):
 class PasswordUpdateRequest(BaseModel):
     old_password: str
     new_password: str
+
+
+GENERIC_TOKEN_NAME_RE = re.compile(r"^google\s+account(?:\s*(?:#\s*)?\d+)?$", re.IGNORECASE)
+
+
+def _decode_jwt_payload(token: str) -> dict:
+    parts = (token or "").split(".")
+    if len(parts) < 2:
+        return {}
+    payload = parts[1]
+    payload += "=" * ((4 - len(payload) % 4) % 4)
+    try:
+        data = json.loads(base64.urlsafe_b64decode(payload.encode("ascii")))
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def token_account_label(token_value: str) -> str:
+    """Best-effort account label extracted from Google/Tabbit JWT payloads.
+
+    This is for admin display only; authentication still relies on the token
+    value returned by Tabbit.
+    """
+    first_token = (token_value or "").split("|", 1)[0]
+    payload = _decode_jwt_payload(first_token)
+    for key in ("email", "name", "preferred_username", "login", "id", "sub"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def is_generic_token_name(name: str | None) -> bool:
+    return not (name or "").strip() or bool(GENERIC_TOKEN_NAME_RE.match((name or "").strip()))
+
+
+def _unique_token_name(base: str, existing_tokens: list[dict]) -> str:
+    candidate = (base or "Google Account").strip()
+    existing = set()
+    for token in existing_tokens:
+        name = (token.get("name") or "").strip()
+        if name:
+            existing.add(name.lower())
+        account_label = token_account_label(token.get("value", ""))
+        if account_label:
+            existing.add(account_label.lower())
+    if candidate.lower() not in existing:
+        return candidate
+    index = 2
+    while f"{candidate} #{index}".lower() in existing:
+        index += 1
+    return f"{candidate} #{index}"
+
+
+def suggest_token_name(
+    requested_name: str | None,
+    token_value: str,
+    existing_tokens: list[dict],
+    *,
+    identity_token: str | None = None,
+) -> str:
+    requested = (requested_name or "").strip()
+    if requested and not is_generic_token_name(requested):
+        return requested
+    label = token_account_label(identity_token or "") or token_account_label(token_value)
+    return _unique_token_name(label or "Google Account", existing_tokens)
 
 
 # router 初始为占位，init() 后替换为带鉴权的完整路由
@@ -124,6 +194,13 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             info = {**t}
             info["status"] = _tm.get_token_status(t["id"])
             v = info.get("value", "")
+            account_label = token_account_label(v)
+            info["account_label"] = account_label
+            info["display_name"] = (
+                account_label
+                if account_label and is_generic_token_name(info.get("name"))
+                else info.get("name", "")
+            )
             # 安全脱敏：只显示最后 4 位（类似信用卡显示方式）
             info["value_preview"] = "***" + v[-4:] if len(v) > 4 else "***"
             del info["value"]
@@ -132,9 +209,11 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
 
     @r.post("/tokens", dependencies=[Depends(admin_dep)])
     async def add_token(req: TokenAddRequest):
+        tokens = _cfg.get("tokens", default=[])
+        token_name = suggest_token_name(req.name, req.value, tokens)
         token_entry = {
             "id": str(uuid.uuid4()),
-            "name": req.name,
+            "name": token_name,
             "value": req.value,
             "enabled": req.enabled,
             "added_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -143,7 +222,6 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             "error_count": 0,
             "status": "unknown",
         }
-        tokens = _cfg.get("tokens", default=[])
         tokens.append(token_entry)
         _cfg.config["tokens"] = tokens
         _cfg.save()
@@ -262,8 +340,22 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
         if next_auth:
             parts.append(next_auth)
         parts.append(device_id)
+        token_value = "|".join(parts)
+        suggested_name = suggest_token_name(
+            "",
+            token_value,
+            _cfg.get("tokens", default=[]) or [],
+            identity_token=req.id_token,
+        )
 
-        return {"ok": True, "token_value": "|".join(parts), "cookies": cookies, "body": body}
+        return {
+            "ok": True,
+            "token_value": token_value,
+            "suggested_name": suggested_name,
+            "account_label": token_account_label(req.id_token) or token_account_label(token_value),
+            "cookies": cookies,
+            "body": body,
+        }
 
     # ── Settings ──
 

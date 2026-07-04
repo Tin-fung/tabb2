@@ -391,24 +391,27 @@ async function renderTokens(el) {
             <th class="px-3 md:px-5 py-3 font-medium text-right">操作</th>
           </tr></thead>
           <tbody>
-            ${data.tokens.map(t => `<tr class="border-b border-zinc-800/50 hover:bg-zinc-800/30" data-id="${t.id}">
+            ${data.tokens.map(t => `<tr class="border-b border-zinc-800/50 hover:bg-zinc-800/30" data-id="${esc(t.id)}">
               <td class="px-3 md:px-5 py-3"><span class="status-dot status-${t.status}"></span></td>
-              <td class="px-3 md:px-5 py-3 font-medium">${esc(t.name)}</td>
+              <td class="px-3 md:px-5 py-3">
+                <div class="font-medium text-zinc-100">${esc(tokenDisplayName(t))}</div>
+                ${tokenMetaLine(t) ? `<div class="mt-0.5 text-xs text-zinc-500">${tokenMetaLine(t)}</div>` : ''}
+              </td>
               <td class="px-3 md:px-5 py-3 text-zinc-400 font-mono text-xs hidden sm:table-cell">${esc(t.value_preview)}</td>
               <td class="px-3 md:px-5 py-3">${t.total_requests}</td>
               <td class="px-3 md:px-5 py-3 ${t.error_count > 0 ? 'text-red-400' : ''} hidden md:table-cell">${t.error_count}</td>
               <td class="px-3 md:px-5 py-3 text-zinc-400 hidden lg:table-cell">${t.last_used_at ? fmtTime(t.last_used_at) : '-'}</td>
               <td class="px-3 md:px-5 py-3 text-right space-x-1">
-                <button onclick="testToken('${t.id}')" class="inline-flex items-center rounded-md bg-zinc-800 px-2.5 py-2 text-xs hover:bg-zinc-700 transition-colors touch-target" title="测试">
+                <button onclick="testToken(${jsArg(t.id)})" class="inline-flex items-center rounded-md bg-zinc-800 px-2.5 py-2 text-xs hover:bg-zinc-700 transition-colors touch-target" title="测试">
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
                 </button>
-                <button onclick="toggleToken('${t.id}', ${!t.enabled})" class="inline-flex items-center rounded-md bg-zinc-800 px-2.5 py-2 text-xs hover:bg-zinc-700 transition-colors touch-target" title="${t.enabled ? '禁用' : '启用'}">
+                <button onclick="toggleToken(${jsArg(t.id)}, ${!t.enabled})" class="inline-flex items-center rounded-md bg-zinc-800 px-2.5 py-2 text-xs hover:bg-zinc-700 transition-colors touch-target" title="${t.enabled ? '禁用' : '启用'}">
                   ${t.enabled
                     ? '<svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>'
                     : '<svg class="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.878 9.878L3 3m6.878 6.878L21 21"/></svg>'
                   }
                 </button>
-                <button onclick="deleteToken('${t.id}','${esc(t.name)}')" class="inline-flex items-center rounded-md bg-zinc-800 px-2.5 py-2 text-xs hover:bg-red-900/50 text-red-400 transition-colors touch-target" title="删除">
+                <button onclick="deleteToken(${jsArg(t.id)}, ${jsArg(t.name)})" class="inline-flex items-center rounded-md bg-zinc-800 px-2.5 py-2 text-xs hover:bg-red-900/50 text-red-400 transition-colors touch-target" title="删除">
                   <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
                 </button>
               </td>
@@ -471,7 +474,7 @@ function showGoogleLogin() {
         <div class="space-y-3">
           <div>
             <label class="block text-sm text-zinc-400 mb-1.5">Token 名称</label>
-            <input id="glName" type="text" placeholder="例如: Google Account 1" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500">
+            <input id="glName" type="text" placeholder="留空则自动使用账号邮箱或名称" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500">
           </div>
           <div class="rounded-lg bg-blue-950/40 border border-blue-900/50 p-3">
             <p class="text-xs text-blue-300 font-medium mb-1.5">操作步骤</p>
@@ -530,6 +533,7 @@ function submitGoogleIdToken() {
 async function exchangeGoogleToken(id_token) {
   const step1 = document.getElementById('glStep1');
   const result = document.getElementById('glResult');
+  const manualName = document.getElementById('glName') ? document.getElementById('glName').value.trim() : '';
   step1.innerHTML = '<div class="flex items-center gap-3 py-6"><svg class="w-5 h-5 animate-spin text-zinc-400" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg><span class="text-sm text-zinc-300">正在换取 Tabbit Token...</span></div>';
 
   try {
@@ -541,14 +545,15 @@ async function exchangeGoogleToken(id_token) {
     step1.style.display = 'none';
     result.style.display = 'block';
 
-    const name = (document.getElementById('glName') ? document.getElementById('glName').value.trim() : '') || 'Google Account';
+    const name = manualName || data.suggested_name || data.account_label || 'Google Account';
 
     result.innerHTML = `
       <div class="rounded-lg bg-emerald-900/30 border border-emerald-800/50 p-4 mb-3">
         <p class="text-sm text-emerald-400 font-medium mb-1">Token 获取成功!</p>
+        ${data.account_label ? `<p class="text-xs text-zinc-400 mb-1">识别账号：${esc(data.account_label)}</p>` : ''}
         <p class="text-xs text-zinc-400 font-mono break-all">${esc(data.token_value).substring(0, 60)}...</p>
       </div>
-      <button onclick="saveGoogleToken('${esc(name)}', '${esc(data.token_value)}')" class="w-full rounded-lg bg-zinc-100 px-4 py-2.5 text-sm font-medium text-zinc-900 hover:bg-zinc-200 transition-colors">
+      <button onclick="saveGoogleToken(${jsArg(name)}, ${jsArg(data.token_value)})" class="w-full rounded-lg bg-zinc-100 px-4 py-2.5 text-sm font-medium text-zinc-900 hover:bg-zinc-200 transition-colors">
         保存为 "${esc(name)}"
       </button>`;
   } catch (e) {
@@ -1516,6 +1521,21 @@ function flattenQuota(obj, prefix = '') {
 // ── Helpers ──
 
 function esc(s) { if (!s) return ''; const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+function jsArg(value) {
+  return esc(JSON.stringify(value ?? ''));
+}
+
+function tokenDisplayName(t) {
+  return t.display_name || t.account_label || t.name || 'Token';
+}
+
+function tokenMetaLine(t) {
+  const parts = [];
+  if (t.name && t.display_name && t.name !== t.display_name) parts.push(`别名: ${esc(t.name)}`);
+  if (t.account_label && t.account_label !== tokenDisplayName(t)) parts.push(`账号: ${esc(t.account_label)}`);
+  return parts.join(' · ');
+}
 
 function fmtTime(ts) {
   if (!ts) return '-';
