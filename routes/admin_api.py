@@ -146,6 +146,94 @@ def _get_admin_client(token_id: str | None = None):
     return info, client
 
 
+async def _safe_overview_call(label: str, func):
+    try:
+        return {"ok": True, "data": await func()}
+    except Exception as e:
+        return {"ok": False, "error": str(e), "data": None, "label": label}
+
+
+async def build_quota_overview(
+    tokens: list[dict],
+    client_for_token,
+    usage_limit: int = 20,
+) -> dict:
+    enabled_tokens = [t for t in tokens if t.get("enabled", True)]
+    accounts = []
+    usage_records = []
+
+    for token in enabled_tokens:
+        token_id = token.get("id", "")
+        token_name = token.get("name", "")
+        info, client = await client_for_token(token_id)
+        account = {
+            "token_id": token_id,
+            "token_name": token_name,
+            "enabled": token.get("enabled", True),
+            "status": token.get("status", "unknown"),
+        }
+
+        if not client:
+            unavailable = {
+                "ok": False,
+                "error": "client not available",
+                "data": None,
+            }
+            account.update(
+                {
+                    "quota": unavailable,
+                    "coupons": unavailable,
+                    "sign_in": unavailable,
+                }
+            )
+            usage_records.append(
+                {
+                    "token_id": token_id,
+                    "token_name": token_name,
+                    "ok": False,
+                    "error": "client not available",
+                    "records": [],
+                }
+            )
+            accounts.append(account)
+            continue
+
+        account["quota"] = await _safe_overview_call("quota", client.get_quota_usage)
+        account["coupons"] = await _safe_overview_call(
+            "coupons",
+            lambda: client.get_coupon_list(),
+        )
+        account["sign_in"] = await _safe_overview_call(
+            "sign_in",
+            client.get_sign_in_status,
+        )
+
+        try:
+            records = await client.get_usage_records(page=1, limit=usage_limit)
+            usage_records.append(
+                {
+                    "token_id": token_id,
+                    "token_name": token_name,
+                    "ok": True,
+                    "records": (records or {}).get("records", []),
+                }
+            )
+        except Exception as e:
+            usage_records.append(
+                {
+                    "token_id": token_id,
+                    "token_name": token_name,
+                    "ok": False,
+                    "error": str(e),
+                    "records": [],
+                }
+            )
+
+        accounts.append(account)
+
+    return {"ok": True, "accounts": accounts, "usage_records": usage_records}
+
+
 def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore):
     global _cfg, _tm, _logs, router
     _cfg = config
@@ -529,6 +617,15 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
                     "appcast_url": appcast_url}
 
     # ── 额度查询（验证默认浏览器伪装是否生效 → Pro 5x quota）──
+    @r.get("/quota/overview", dependencies=[Depends(admin_dep)])
+    async def query_quota_overview():
+        tokens = _cfg.get("tokens", default=[]) or []
+
+        async def client_for_token(token_id):
+            return _tm.get_client_for_token(token_id)
+
+        return await build_quota_overview(tokens, client_for_token)
+
     @r.get("/quota", dependencies=[Depends(admin_dep)])
     async def query_quota(token_id: Optional[str] = None):
         """查询账号额度使用情况。
