@@ -462,3 +462,35 @@ The first backend implementation adds:
 - Claude/OpenAI route handling that records native tools without exposing them as client-executable tools.
 - A model capability gate so required local tool mode is limited to certified models.
 - Offline native tool replay smoke: `.venv/bin/python scripts/verify_native_tool_replay.py`.
+
+### Live native tool smoke
+
+本轮补上真实服务级 smoke：
+
+```bash
+TABBIT_ADMIN_PASSWORD='<admin-password>' \
+  .venv/bin/python scripts/verify_native_tool_live.py \
+    --model Default \
+    --proxy-api-key '<proxy-api-key>' \
+    --json
+```
+
+也可用已登录的 admin JWT：
+
+```bash
+TABBIT_ADMIN_TOKEN='<admin-jwt>' \
+  .venv/bin/python scripts/verify_native_tool_live.py \
+    --model Default \
+    --proxy-api-key '<proxy-api-key>' \
+    --json
+```
+
+脚本验证链路：
+
+1. 请求本地 `/health`。
+2. 通过 OpenAI 兼容 `/v1/chat/completions` 发起 streaming 搜索型 prompt。
+3. 完整 drain SSE，等待 route 写入 request log。
+4. 查询 `/api/admin/logs`，并降级查 `/api/admin/status.recent_logs`。
+5. 断言 `native_tool_names` 包含 `parallel_web_search`、状态为 `success`、`native_tools_result_chars > 0`。
+
+这个 smoke 需要真实运行中的 tabb2 服务、可用 Tabbit token，以及 admin 登录凭据；因此不并入普通 unittest。

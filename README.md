@@ -25,6 +25,27 @@ tabb2 uses a Dual Tool Plane model:
 - Tabbit native tools such as search or browser tasks execute upstream inside Tabbit and are recorded as native tool activity.
 - Native Tabbit tools are not exposed as local Bash/Write/Edit/Read tool calls.
 
+Offline native-tool replay smoke:
+
+```bash
+.venv/bin/python scripts/verify_native_tool_replay.py --json
+```
+
+Live native-tool smoke against a running local server:
+
+```bash
+TABBIT_ADMIN_PASSWORD='<admin-password>' \
+  .venv/bin/python scripts/verify_native_tool_live.py \
+    --model Default \
+    --proxy-api-key '<proxy-api-key>' \
+    --json
+```
+
+The live smoke drains an OpenAI-compatible streaming request, then verifies
+`/api/admin/logs` or `/api/admin/status` contains native tool summary fields for
+`parallel_web_search`. Omit `--proxy-api-key` when local `config.json` already
+has `proxy.api_key`. It does not print admin or proxy credentials.
+
 ## 🚀 快速开始
 
 推荐使用 Docker 和 Docker Compose 进行部署，这是最简单、最可靠的方式。
