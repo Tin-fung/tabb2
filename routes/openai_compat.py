@@ -964,9 +964,11 @@ async def chat_completions(
     parser = ToolifyParser(trigger_signal, False, name_map=name_map)
     required = _required_by_name(tools)
     properties = _properties_by_name(tools)
+    native_tools = NativeToolAggregator()
     try:
         async for event in client.send_message(session_id, content, tabbit_model, references=references, task_name=task_name):
             et, ed = event["event"], event["data"]
+            native_tools.consume(et, ed, local_name_map=name_map or {})
             if et == "message_chunk":
                 text = ed.get("content", "")
                 if trigger_signal:
@@ -997,7 +999,7 @@ async def chat_completions(
                 for idx, tc in enumerate(ed.get("tool_calls", [])):
                     fn = tc.get("function", {})
                     alias_name = fn.get("name", "")
-                    if name_map and alias_name not in name_map:
+                    if not name_map or alias_name not in name_map:
                         continue
                     orig_name = name_map.get(alias_name, alias_name)
                     try:
@@ -1056,6 +1058,7 @@ async def chat_completions(
                 status="success" if not error_msg else "error",
                 duration=duration,
                 error=error_msg,
+                native_tools=native_tools.to_log_fields(),
             )
         )
 
