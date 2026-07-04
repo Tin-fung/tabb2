@@ -23,9 +23,10 @@ DEFAULT_CONFIG = {
         # 默认浏览器标记：编进 unique-uuid 第 5 位，让上游按 Pro 会员发权益。
         # 算法移植自 web 端 eN(isDefault)。True=伪装默认浏览器领免费 Pro。
         "default_browser": True,
-        # SSL 验证：生产环境建议启用，开发/测试可禁用
-        "verify_ssl": False,
+        # SSL 验证：默认启用；仅在本地调试/抓包时显式关闭
+        "verify_ssl": True,
     },
+    "trusted_proxies": [],
     "tokens": [],
     "proxy": {"api_key": "", "system_prompt": ""},
     "claude": {"default_model": "best", "system_prompt": ""},
@@ -77,6 +78,7 @@ class ConfigManager:
             self._migrate_tabbit_config(config)
             # 迁移：旧版 SHA-256 密码哈希升级为 bcrypt
             self._migrate_password_hash(config)
+            self._ensure_admin_security(config)
             # 确保新字段被写入
             self._save(config)
             return config
@@ -116,6 +118,13 @@ class ConfigManager:
         # default_browser 默认开启（领免费 Pro 会员）
         if tabbit.get("default_browser") is None:
             tabbit["default_browser"] = True
+        if tabbit.get("verify_ssl") is None:
+            tabbit["verify_ssl"] = True
+
+    def _ensure_admin_security(self, config: dict):
+        admin = config.setdefault("admin", {})
+        if not admin.get("jwt_secret"):
+            admin["jwt_secret"] = secrets.token_hex(32)
 
     def _migrate_password_hash(self, config: dict):
         """迁移旧版 SHA-256 密码哈希为 bcrypt

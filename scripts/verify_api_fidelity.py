@@ -43,11 +43,20 @@ def _first_token(cfg: ConfigManager) -> str:
     raise RuntimeError("no enabled token in config.json")
 
 
-def _post_json_stream(url: str, body: dict, timeout: int = 180) -> list[dict]:
+def _proxy_auth_headers(cfg: ConfigManager, *, anthropic: bool = False) -> dict:
+    api_key = cfg.get("proxy", "api_key", default="")
+    if api_key:
+        return {"x-api-key": api_key} if anthropic else {"Authorization": f"Bearer {api_key}"}
+    if cfg.get("tokens", default=[]):
+        raise RuntimeError("proxy.api_key is required when verifying endpoints backed by the token pool")
+    return {}
+
+
+def _post_json_stream(url: str, body: dict, headers: dict | None = None, timeout: int = 180) -> list[dict]:
     req = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **(headers or {})},
         method="POST",
     )
     events = []
@@ -124,7 +133,7 @@ async def verify_direct_tabbit(cfg: ConfigManager, model: str) -> dict:
         await client.client.aclose()
 
 
-def verify_openai_stream(server: str, model: str) -> dict:
+def verify_openai_stream(server: str, model: str, cfg: ConfigManager) -> dict:
     events = _post_json_stream(
         f"{server}/v1/chat/completions",
         {
@@ -138,6 +147,7 @@ def verify_openai_stream(server: str, model: str) -> dict:
                 }
             ],
         },
+        headers=_proxy_auth_headers(cfg),
     )
     chunks = [e["data"] for e in events if isinstance(e["data"], dict)]
     if not chunks:
@@ -168,7 +178,7 @@ def verify_openai_stream(server: str, model: str) -> dict:
     }
 
 
-def verify_claude_stream(server: str, model: str) -> dict:
+def verify_claude_stream(server: str, model: str, cfg: ConfigManager) -> dict:
     events = _post_json_stream(
         f"{server}/v1/messages",
         {
@@ -182,6 +192,7 @@ def verify_claude_stream(server: str, model: str) -> dict:
                 }
             ],
         },
+        headers=_proxy_auth_headers(cfg, anthropic=True),
     )
     names = [event["event"] for event in events if event["event"]]
     for required in ("message_start", "message_delta", "message_stop"):
@@ -220,8 +231,8 @@ async def main() -> int:
         raise AssertionError(f"server unhealthy: {health}")
 
     results["checks"]["direct_tabbit"] = await verify_direct_tabbit(cfg, args.model)
-    results["checks"]["openai_stream"] = verify_openai_stream(args.server, args.model)
-    results["checks"]["claude_stream"] = verify_claude_stream(args.server, args.model)
+    results["checks"]["openai_stream"] = verify_openai_stream(args.server, args.model, cfg)
+    results["checks"]["claude_stream"] = verify_claude_stream(args.server, args.model, cfg)
     results["duration_sec"] = round(time.time() - started_at, 2)
 
     if args.json:

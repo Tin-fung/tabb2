@@ -332,8 +332,8 @@ async function renderDashboard(el) {
           <tbody>
             ${s.recent_logs.map(l => `<tr class="border-b border-zinc-800/50 hover:bg-zinc-800/30">
               <td class="px-3 md:px-5 py-3 text-zinc-400 whitespace-nowrap">${fmtTime(l.timestamp)}</td>
-              <td class="px-3 md:px-5 py-3">${l.model}</td>
-              <td class="px-3 md:px-5 py-3 text-zinc-400">${l.token_name}</td>
+              <td class="px-3 md:px-5 py-3">${esc(l.model)}</td>
+              <td class="px-3 md:px-5 py-3 text-zinc-400">${esc(l.token_name)}</td>
               <td class="px-3 md:px-5 py-3">${statusBadge(l.status)}</td>
               <td class="px-3 md:px-5 py-3 text-zinc-400">${l.duration}s</td>
             </tr>`).join('') || '<tr><td colspan="5" class="px-5 py-8 text-center text-zinc-500">暂无请求记录</td></tr>'}
@@ -719,7 +719,7 @@ async function renderSettings(el) {
       <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-6">
         <h3 class="text-sm font-medium text-zinc-300 mb-4">代理配置</h3>
         <div>
-          <label class="block text-sm text-zinc-400 mb-1.5">API Key（留空则不校验）</label>
+          <label class="block text-sm text-zinc-400 mb-1.5">API Key（OpenAI/Claude 兼容接口使用内置 Token 池时必填）</label>
           <input id="sApiKey" type="text" value="${esc(s.proxy.api_key)}" placeholder="sk-..." class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500">
         </div>
       </div>
@@ -736,7 +736,7 @@ async function renderSettings(el) {
         <div class="rounded-lg bg-zinc-800/50 border border-zinc-700/50 p-4">
           <p class="text-xs text-zinc-400 mb-2 font-medium">Claude Code 连接配置</p>
           <code class="block text-xs text-emerald-400 bg-zinc-900 rounded-md p-3 whitespace-pre">ANTHROPIC_BASE_URL=http://localhost:${s.server.port}
-ANTHROPIC_API_KEY=${s.proxy.api_key || 'any-key-here'}</code>
+ANTHROPIC_API_KEY=${s.proxy.api_key || 'set-proxy-api-key'}</code>
           <p class="text-xs text-zinc-500 mt-2">支持 /v1/messages 端点，兼容工具调用和 thinking 模式</p>
         </div>
       </div>
@@ -1527,7 +1527,7 @@ function fmtTime(ts) {
 
 function statusBadge(s) {
   const colors = { success: 'bg-emerald-900/50 text-emerald-400', error: 'bg-red-900/50 text-red-400', pending: 'bg-zinc-800 text-zinc-400' };
-  return `<span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${colors[s] || colors.pending}">${s}</span>`;
+  return `<span class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${colors[s] || colors.pending}">${esc(s)}</span>`;
 }
 
 // ── Init ──

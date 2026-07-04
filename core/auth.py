@@ -16,6 +16,8 @@ TOKEN_EXPIRY = 86400  # 24 小时
 def create_jwt(config: ConfigManager) -> str:
     """创建 JWT token（使用标准 jose 库）"""
     secret = config.get("admin", "jwt_secret")
+    if not secret:
+        raise RuntimeError("admin jwt_secret is not configured")
     payload = {
         "role": "admin",
         "exp": int(time.time()) + TOKEN_EXPIRY,
@@ -27,8 +29,14 @@ def verify_jwt(token: str, config: ConfigManager) -> dict:
     """验证 JWT token（使用标准 jose 库）"""
     try:
         secret = config.get("admin", "jwt_secret")
+        if not secret:
+            raise HTTPException(status_code=401, detail="admin jwt_secret missing")
         payload = jwt.decode(token, secret, algorithms=["HS256"])
+        if payload.get("role") != "admin":
+            raise HTTPException(status_code=401, detail="admin role required")
         return payload
+    except HTTPException:
+        raise
     except JWTError as e:
         logger.warning("JWT verification failed: %s", e)
         raise HTTPException(status_code=401, detail=str(e))

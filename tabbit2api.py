@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import time
 import logging
+import ipaddress
 from pathlib import Path
 from collections import defaultdict
 from contextlib import asynccontextmanager
@@ -32,7 +33,7 @@ _tokens = cfg.get("tokens", default=[]) or []
 _first_token = next((t["value"] for t in _tokens if t.get("enabled", True)), None)
 model_registry = init_registry(
     cfg.get("tabbit", "base_url", default="https://web.tabbit.ai"),
-    verify_ssl=cfg.get("tabbit", "verify_ssl", default=False),
+    verify_ssl=cfg.get("tabbit", "verify_ssl", default=True),
     token_str=_first_token,
 )
 
@@ -54,9 +55,8 @@ async def lifespan(app: FastAPI):
     api_key = cfg.get("proxy", "api_key")
     if not api_key:
         logger.warning("=" * 60)
-        logger.warning("⚠️  proxy.api_key 未设置，API 端点无需认证！")
-        logger.warning("⚠️  任何请求都能调用 API，存在安全风险")
-        logger.warning("⚠️  请在管理面板 Settings 中设置 API Key")
+        logger.warning("⚠️  proxy.api_key 未设置，内置 Token 池模式下 /v1/* 将拒绝请求")
+        logger.warning("⚠️  请在管理面板 Settings 中设置 API Key 后再接入客户端")
         logger.warning("=" * 60)
 
     # 启动时拉取动态模型清单（带重试，失败也不阻塞启动）。
@@ -98,15 +98,57 @@ login_attempts: dict[str, list[float]] = defaultdict(list)
 api_requests: dict[str, list[float]] = defaultdict(list)
 
 
+class RequestBodyTooLarge(Exception):
+    pass
+
+
+def _trusted_proxy(host: str, trusted_proxies: list[str]) -> bool:
+    if not host:
+        return False
+    try:
+        host_ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    for entry in trusted_proxies or []:
+        try:
+            if "/" in entry:
+                if host_ip in ipaddress.ip_network(entry, strict=False):
+                    return True
+            elif host_ip == ipaddress.ip_address(entry):
+                return True
+        except ValueError:
+            logger.warning("invalid trusted proxy entry ignored: %s", entry)
+    return False
+
+
+def client_ip_for_request(request: Request, trusted_proxies: list[str] | None = None) -> str:
+    direct_host = request.client.host if request.client else "unknown"
+    if _trusted_proxy(direct_host, trusted_proxies or []):
+        forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+        real_ip = request.headers.get("x-real-ip", "").strip()
+        return forwarded or real_ip or direct_host
+    return direct_host
+
+
+def limited_receive(receive, limit: int):
+    received = 0
+
+    async def _receive():
+        nonlocal received
+        message = await receive()
+        if message.get("type") == "http.request":
+            received += len(message.get("body") or b"")
+            if received > limit:
+                raise RequestBodyTooLarge()
+        return message
+
+    return _receive
+
+
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
     """安全中间件：请求体大小限制 + 速率限制"""
-    # 优先从反向代理头取真实 IP（nginx: proxy_set_header X-Real-IP $remote_addr）
-    client_ip = (
-        request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-        or request.headers.get("x-real-ip", "").strip()
-        or (request.client.host if request.client else "unknown")
-    )
+    client_ip = client_ip_for_request(request, cfg.get("trusted_proxies", default=[]))
     now = time.time()
 
     # 1. 请求体大小限制
@@ -116,6 +158,7 @@ async def security_middleware(request: Request, call_next):
             status_code=413,
             content={"detail": "请求体过大，最大允许 10MB"}
         )
+    request._receive = limited_receive(request._receive, MAX_BODY_SIZE)
 
     # 2. 登录接口速率限制
     if request.url.path == "/api/admin/login" and request.method == "POST":
@@ -143,7 +186,13 @@ async def security_middleware(request: Request, call_next):
             )
         api_requests[client_ip].append(now)
 
-    return await call_next(request)
+    try:
+        return await call_next(request)
+    except RequestBodyTooLarge:
+        return JSONResponse(
+            status_code=413,
+            content={"detail": "请求体过大，最大允许 10MB"}
+        )
 
 
 # ── 挂载路由 ──

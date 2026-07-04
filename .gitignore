@@ -1,7 +1,14 @@
 # 临时调试脚本
 _diag.py
 _probe*.py
+scripts/probe_5models.py
 vps_probe.py
+
+# 本机/agent 运行时产物
+.DS_Store
+**/.DS_Store
+.code-abyss/
+.omo/
 
 # Python
 __pycache__/
