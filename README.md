@@ -21,8 +21,9 @@
 
 tabb2 uses a Dual Tool Plane model:
 
-- Local client tools from Claude Code, opencode, or OpenAI tool callers are best-effort and model-gated.
+- Native Tabbit tools are the default path. Search/browser/memory-style client tools are treated as native-equivalent hints and are not converted into local tool calls.
 - Tabbit native tools such as search or browser tasks execute upstream inside Tabbit and are recorded as native tool activity.
+- Local client tools such as Read/Write/Edit/Bash/LS are disabled by default and require explicit local fallback (`x-tabbit-local-tools: true` or `proxy.local_tools_enabled=true`) plus a certified model.
 - Native Tabbit tools are not exposed as local Bash/Write/Edit/Read tool calls.
 
 Offline native-tool replay smoke:

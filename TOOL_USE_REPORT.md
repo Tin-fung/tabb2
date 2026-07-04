@@ -2,6 +2,20 @@
 
 > 2026-06-22 初测 · 2026-06-23 全模型复测翻盘（见末章「2026-06-23 全模型复测」）
 
+## 2026-07-04 更新：Native-first 成为默认策略
+
+项目方向已调整：默认优先还原 Tabbit 官方客户端原生行为，而不是优先适配 Claude Code/opencode 的本地工具调用。
+
+- 搜索、浏览、记忆、widget 这类客户端工具会被视为 Tabbit native-equivalent hint，不再注入 `cc_*` + XML 本地工具协议。
+- 例如“搜索今天热点科技新闻”应优先让上游触发 `parallel_web_search`，最终返回普通文本答案。
+- `Read`、`Write`、`Edit`、`Bash`、`LS` 等本地工具仍保留 legacy compatibility path，但默认关闭。
+- 本地工具 fallback 需要显式启用：请求头 `x-tabbit-local-tools: true` 或配置 `proxy.local_tools_enabled=true`，并且模型必须在 certified allowlist 内。
+- Native Tabbit 工具事件继续通过 `message_tool_calls` / `tool_start` / `tool_finish` 聚合进日志，但不会伪装成下游客户端要执行的工具调用。
+
+因此，下方 2026-06-23 的模型榜单现在主要作为 legacy local tool compatibility 的历史依据，不再代表默认产品路径。
+
+---
+
 ## 结论先行（2026-06-23 更新）
 
 **本项目的"触发信号 + XML"工具调用方案是成立的——6/22"所有模型失效"的结论是错的，根因是当时只测了 8 个模型且任务撞上游内置工具。6/23 对全部 21 个上游模型复测，11 个可用，其中 7 个双 PASS。**

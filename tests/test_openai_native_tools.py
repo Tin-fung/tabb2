@@ -55,8 +55,8 @@ class FakeLocalToolClient:
                         "id": "call_local",
                         "type": "function",
                         "function": {
-                            "name": "cc_search",
-                            "arguments": '{"query":"today tech news"}',
+                            "name": "cc_Write",
+                            "arguments": '{"file_path":"/tmp/news.txt","content":"today tech news"}',
                         },
                     }
                 ]
@@ -172,7 +172,7 @@ class OpenAINativeToolsTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(log_data["native_tool_names"], ["parallel_web_search"])
         self.assertEqual(tm.successes, ["token-1"])
 
-    async def test_non_stream_local_alias_tool_still_emits_openai_tool_call(self):
+    async def test_non_stream_local_alias_tool_still_emits_openai_tool_call_when_enabled(self):
         openai_compat.get_registry = lambda: FakeRegistry()
         openai_compat._tm = FakeTokenManager(client=FakeLocalToolClient())
         req = openai_compat.ChatCompletionRequest(
@@ -183,12 +183,15 @@ class OpenAINativeToolsTest(unittest.IsolatedAsyncioTestCase):
                 {
                     "type": "function",
                     "function": {
-                        "name": "search",
-                        "description": "search the web",
+                        "name": "Write",
+                        "description": "write a local file",
                         "parameters": {
                             "type": "object",
-                            "properties": {"query": {"type": "string"}},
-                            "required": ["query"],
+                            "properties": {
+                                "file_path": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                            "required": ["file_path", "content"],
                         },
                     },
                 }
@@ -199,10 +202,11 @@ class OpenAINativeToolsTest(unittest.IsolatedAsyncioTestCase):
         response = await openai_compat.chat_completions(
             req,
             authorization="Bearer sk-proxy",
+            x_tabbit_local_tools="true",
         )
         message = response["choices"][0]["message"]
         log_data = openai_compat._logs.entries[0].to_dict()
 
-        self.assertEqual(message["tool_calls"][0]["function"]["name"], "search")
+        self.assertEqual(message["tool_calls"][0]["function"]["name"], "Write")
         self.assertEqual(response["choices"][0]["finish_reason"], "tool_calls")
         self.assertEqual(log_data["native_tools_count"], 0)
