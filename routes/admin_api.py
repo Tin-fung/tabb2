@@ -12,7 +12,7 @@ from typing import Optional
 from core.config import ConfigManager, hash_password
 from core.auth import create_jwt, verify_password, require_admin
 from core.token_manager import TokenManager, token_expiration_metadata
-from core.tabbit_client import TabbitClient, _gen_unique_uuid
+from core.tabbit_client import TabbitClient
 from core.log_store import LogStore
 
 logger = logging.getLogger("tabbit2openai")
@@ -246,6 +246,75 @@ async def build_quota_overview(
         accounts.append(account)
 
     return {"ok": True, "accounts": accounts, "usage_records": usage_records}
+
+
+def _time_sync_status(offset: float) -> tuple[str, str]:
+    abs_off = abs(offset)
+    if abs_off < 60:
+        return "pass", f"vps 与上游时钟偏差 {offset:+.1f}s（±60s 内，安全）"
+    if abs_off < 300:
+        return "warn", f"vps 与上游时钟偏差 {offset:+.1f}s（偏大，建议同步系统时钟）"
+    return (
+        "fail",
+        f"vps 与上游时钟偏差 {offset:+.1f}s（过大，时间戳位校验会翻车！请同步系统时钟）",
+    )
+
+
+async def run_diagnose_model_registry_check(check, registry, token_value: str | None = None) -> None:
+    from core.model_registry import MODELS_API_PATH
+
+    if not registry:
+        check("上游连通(模型配置)", "warn", "模型注册表未初始化")
+        return
+
+    if token_value:
+        registry.update_token(token_value)
+
+    ok = await registry.refresh(force=True)
+    models = registry.list_models() if (ok or registry.ready) else []
+    snapshot = registry.snapshot_info
+    if models:
+        from_snapshot = bool(snapshot.get("from_snapshot"))
+        status = "warn" if from_snapshot else "pass"
+        source = "快照兜底" if from_snapshot else "动态拉取"
+        check(
+            "上游连通(模型配置)",
+            status,
+            f"{MODELS_API_PATH} {source} {len(models)} 个模型",
+        )
+        return
+
+    check("上游连通(模型配置)", "fail", f"{MODELS_API_PATH} 未能拉取模型清单")
+
+
+async def run_diagnose_chat_session_check(
+    check,
+    client,
+    *,
+    token_id: str | None = None,
+    token_manager=None,
+) -> None:
+    if not client:
+        check("建会话", "fail", "client not available")
+        check("时间同步", "warn", "未能创建会话，无法判断时钟偏差")
+        return
+
+    try:
+        session_id = await client.create_chat_session()
+        if token_id and token_manager:
+            refresher = getattr(token_manager, "refresh_token_from_client", None)
+            if callable(refresher):
+                refresher(token_id, client)
+        check("建会话", "pass", f"session_id={session_id}")
+
+        if getattr(client, "_server_time_synced", False):
+            status, detail = _time_sync_status(getattr(client, "_server_time_offset", 0.0))
+            check("时间同步", status, detail)
+        else:
+            check("时间同步", "warn", "未能从上游 Date 头同步时间，无法判断时钟偏差")
+    except Exception as e:
+        check("建会话", "fail", f"失败: {e}")
+        check("时间同步", "warn", "建会话失败，无法判断时钟偏差")
 
 
 def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore):
@@ -1012,90 +1081,32 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
                       "pass" if t.get("status") != "cooldown" else "warn",
                       f"status={t.get('status','?')} errors={t.get('error_count',0)} total={t.get('total_requests',0)}")
 
-        # 3. 上游连通性 + 协议自检（用第一个可用 token）
+        # 3. 上游连通性 + 协议自检（用真实业务链路）
         if tokens:
             token_info = next((t for t in tokens if t.get("enabled", True)), tokens[0])
-            parts = token_info["value"].split("|")
-            jwt_token = parts[0]
-            user_id = ""
-            try:
-                import json as _json
-                payload = _json.loads(_base64.urlsafe_b64decode(jwt_token.split(".")[1] + "=="))
-                user_id = payload.get("id", payload.get("sub", ""))
-            except Exception:
-                pass
+            info, client = _get_admin_client(token_info["id"])
+            await run_diagnose_chat_session_check(
+                check,
+                client,
+                token_id=token_info["id"],
+                token_manager=_tm,
+            )
 
-            headers = {
-                "x-req-ctx": _base64.b64encode(f"{browser_version}({sparkle})".encode()).decode(),
-                "unique-uuid": _gen_unique_uuid(tabbit_cfg.get("default_browser", True)),
-                "x-chrome-id-consistency-request": f"version=1,client_id={tabbit_cfg.get('client_id','')},device_id=test,sync_account_id={user_id},signin_mode=all_accounts,signout_mode=show_confirmation",
-            }
-            cookies = {"token": jwt_token, "user_id": user_id, "managed": "tab_browser", "NEXT_LOCALE": "zh"}
-            if len(parts) > 1:
-                cookies["next-auth.session-token"] = parts[1]
+            # 模型诊断复用动态注册表，避免旧 /api/v0/chat/models 缓存清单误导。
+            from core.model_registry import get_registry
+            await run_diagnose_model_registry_check(
+                check,
+                get_registry(),
+                token_value=token_info.get("value", ""),
+            )
 
-            # 3a. 模型清单接口
-            server_time_offset = 0.0
-            try:
-                verify_ssl = _cfg.get("tabbit", "verify_ssl", default=False)
-                async with _httpx.AsyncClient(timeout=10, verify=verify_ssl) as hc:
-                    resp = await hc.get(f"{base_url}/api/v0/chat/models", headers=headers, cookies=cookies)
-                    # 从 Date 头同步服务器时间，供 3b 生成 uuid 用
-                    dh = resp.headers.get("date")
-                    if dh:
-                        try:
-                            from email.utils import parsedate_to_datetime as _pd
-                            server_time_offset = _pd(dh).timestamp() - time.time()
-                        except Exception:
-                            pass
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        count = sum(len(v) for v in (data.get("supported_models") or {}).values())
-                        check("上游连通(模型接口)", "pass", f"/api/v0/chat/models 返回 {count} 个模型")
-                    else:
-                        check("上游连通(模型接口)", "fail", f"模型接口 {resp.status_code}: {resp.text[:100]}")
-            except Exception as e:
-                check("上游连通(模型接口)", "fail", f"连接失败: {e}")
-
-            # 3a+1. 服务器时间同步状态（unique-uuid 时间戳位校验依赖）
-            if server_time_offset != 0.0:
-                abs_off = abs(server_time_offset)
-                if abs_off < 60:
-                    check("时间同步", "pass", f"vps 与上游时钟偏差 {server_time_offset:+.1f}s（±60s 内，安全）")
-                elif abs_off < 300:
-                    check("时间同步", "warn", f"vps 与上游时钟偏差 {server_time_offset:+.1f}s（偏大，建议同步系统时钟）")
-                else:
-                    check("时间同步", "fail", f"vps 与上游时钟偏差 {server_time_offset:+.1f}s（过大，时间戳位校验会翻车！请同步系统时钟：apt install ntp && systemctl start ntp）")
-            else:
-                check("时间同步", "warn", "未能从上游 Date 头同步时间（可能被 4xx 拒绝），无法判断时钟偏差")
-
-            # 3b. 建会话测试（用同步后的服务器时间生成 uuid）
-            try:
-                verify_ssl = _cfg.get("tabbit", "verify_ssl", default=False)
-                async with _httpx.AsyncClient(timeout=15, verify=verify_ssl, follow_redirects=True) as hc:
-                    import urllib.parse as _up, json as _json
-                    router_state = ["",{"children":["chat",{"children":[["id","new","d"],{"children":["__PAGE__",{},None,"refetch"]},None,None]},None,None]},None,None]
-                    h2 = {**headers,
-                          "unique-uuid": _gen_unique_uuid(tabbit_cfg.get("default_browser", True), time.time() + server_time_offset),
-                          "rsc":"1", "next-router-state-tree": _up.quote(_json.dumps(router_state)),
-                          "referer": f"{base_url}/chat/new"}
-                    resp = await hc.get(f"{base_url}/chat/new", params={"_rsc":"auto"}, headers=h2, cookies=cookies)
-                    import re as _re
-                    m = _re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", resp.text)
-                    if m:
-                        check("建会话", "pass", f"session_id={m.group(0)}")
-                    else:
-                        check("建会话", "fail", f"未提取到 session_id，status={resp.status_code}")
-            except Exception as e:
-                check("建会话", "fail", f"失败: {e}")
-
-        # 4. 动态模型注册表
+        # 4. 动态模型注册表缓存状态
         from core.model_registry import get_registry
         registry = get_registry()
         if registry and registry.ready:
             check("模型注册表", "pass", f"已缓存 {len(registry.list_models())} 个模型")
         elif registry:
-            check("模型注册表", "warn", "未就绪（拉取失败或未初始化），用静态 MODEL_MAP 兜底")
+            check("模型注册表", "warn", "未就绪（拉取失败或未初始化）")
         else:
             check("模型注册表", "warn", "未初始化")
 
