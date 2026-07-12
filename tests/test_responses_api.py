@@ -85,7 +85,9 @@ class ResponsesAPITest(unittest.IsolatedAsyncioTestCase):
             authorization="Bearer relay-secret",
         )
         tools_payload = json.loads(tools_response.body)
-        self.assertEqual(tools_payload["result"]["tools"][0]["name"], "dispatch")
+        tool = tools_payload["result"]["tools"][0]
+        self.assertEqual(tool["name"], "client_tool_dispatch")
+        self.assertIn("client_tool_name", tool["inputSchema"]["required"])
 
     async def test_mcp_rejects_invalid_relay_token(self):
         with self.assertRaises(HTTPException) as ctx:
@@ -95,6 +97,59 @@ class ResponsesAPITest(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(ctx.exception.status_code, 401)
+
+    async def test_mcp_dispatch_accepts_new_and_legacy_argument_shapes(self):
+        class FakeBridge:
+            def __init__(self):
+                self.calls = []
+
+            async def relay_call(self, **kwargs):
+                self.calls.append(kwargs)
+                return "tool result"
+
+        original = responses_api._bridge
+        bridge = FakeBridge()
+        responses_api._bridge = bridge
+        try:
+            current = await responses_api.mcp_relay(
+                responses_api.MCPRequest(
+                    id=1,
+                    method="tools/call",
+                    params={
+                        "name": "client_tool_dispatch",
+                        "arguments": {
+                            "bridge_id": "bridge_current",
+                            "client_tool_name": "write",
+                            "arguments": {"path": "test.txt"},
+                        },
+                    },
+                ),
+                authorization="Bearer relay-secret",
+            )
+            legacy = await responses_api.mcp_relay(
+                responses_api.MCPRequest(
+                    id=2,
+                    method="tools/call",
+                    params={
+                        "name": "dispatch",
+                        "arguments": {
+                            "bridge_id": "bridge_legacy",
+                            "name": "read",
+                            "arguments": {"path": "test.txt"},
+                        },
+                    },
+                ),
+                authorization="Bearer relay-secret",
+            )
+
+            self.assertEqual(json.loads(current.body)["result"]["isError"], False)
+            self.assertEqual(json.loads(legacy.body)["result"]["isError"], False)
+            self.assertEqual(
+                [call["name"] for call in bridge.calls],
+                ["write", "read"],
+            )
+        finally:
+            responses_api._bridge = original
 
 
 if __name__ == "__main__":

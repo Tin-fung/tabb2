@@ -25,6 +25,9 @@ CALL_BATCH_WINDOW_SECONDS = 0.05
 AGENT_CONTENT_LIMIT = 19_500
 AGENT_PROMPT_RESERVE = 8_000
 MAX_NATIVE_ROUTE_ATTEMPTS = 2
+MCP_RELAY_TOOL_NAME = "client_tool_dispatch"
+LEGACY_MCP_RELAY_TOOL_NAME = "dispatch"
+AGENT_INTERNAL_TOOL_NAMES = frozenset({"plan_track", "termination"})
 AGENT_CONTEXT_REFERENCE_TITLE = "Complete client conversation context"
 AGENT_CONTEXT_REFERENCE_NOTICE = (
     "[FULL CONTEXT REFERENCE]\n"
@@ -167,8 +170,11 @@ class ResponsesBridge:
                     retry_native_tools=retry_native_tools,
                 )
                 logger.info(
-                    "agent relay prompt prepared: chars=%d tools=%d attempt=%d "
+                    "agent relay prompt prepared: model=%s requested_model=%s "
+                    "chars=%d tools=%d attempt=%d "
                     "references=%d reference_chars=%d",
+                    session.model,
+                    session.requested_model,
                     len(content),
                     len(session.allowed_tools),
                     attempt,
@@ -459,22 +465,26 @@ def build_relay_prompt(
         retry_notice = (
             "A previous attempt incorrectly used these Tabbit cloud tools: "
             f"{', '.join(retry_native_tools)}. Do not use them again. "
-            "Retry the original task through MCP dispatch.\n"
+            f"Retry the original task through MCP {MCP_RELAY_TOOL_NAME}.\n"
         )
     relay_header = (
         "[LOCAL TOOL ROUTING - MANDATORY]\n"
         "Client tools are authoritative and execute in the user's actual OpenCode "
         "workspace. For filesystem, repository, shell, command, code execution, "
-        "test, build, or git operations, you MUST call the MCP tool named dispatch. "
+        "test, build, or git operations, you MUST call the MCP tool named "
+        f"{MCP_RELAY_TOOL_NAME}. "
         "Do not use Tabbit built-in sandbox, E2B, code interpreter, terminal, "
         "browser, computer, or filesystem tools as substitutes. Never create or "
         "claim to create client files under /mnt/work, /tmp, or another cloud "
-        "sandbox. Do not claim a local side effect unless dispatch returned success.\n"
+        "sandbox. Do not claim a local side effect unless "
+        f"{MCP_RELAY_TOOL_NAME} returned success.\n"
         f"{retry_notice}"
-        "For every client tool call, pass bridge_id exactly as provided, set name "
-        "to the requested client tool name, and put its arguments object in "
-        "arguments. Never invent a different bridge_id. After dispatch returns, "
-        "continue the task using its result.\n\n"
+        "For every client tool call, pass bridge_id exactly as provided, set "
+        "client_tool_name to the requested client tool name, and put that tool's "
+        "arguments object in arguments. Never set client_tool_name to "
+        f"{MCP_RELAY_TOOL_NAME} or {LEGACY_MCP_RELAY_TOOL_NAME}; those are relay "
+        "transport names, not client tools. Never invent a different bridge_id. "
+        f"After {MCP_RELAY_TOOL_NAME} returns, continue the task using its result.\n\n"
         f"bridge_id: {bridge_id}\n"
         "Available client tools:\n"
     )
@@ -706,13 +716,21 @@ def extract_native_agent_tool_names(event_type: str, data: dict[str, Any]) -> se
     return {
         name
         for name in extract_agent_tool_names(event_type, data)
-        if not is_dispatch_tool_name(name)
+        if not is_dispatch_tool_name(name) and not is_agent_internal_tool_name(name)
     }
 
 
 def is_dispatch_tool_name(name: str) -> bool:
     normalized = name.strip().lower()
-    return normalized == "dispatch" or normalized.endswith(("__dispatch", ".dispatch"))
+    relay_names = (MCP_RELAY_TOOL_NAME, LEGACY_MCP_RELAY_TOOL_NAME)
+    return normalized in relay_names or any(
+        normalized.endswith((f"__{relay_name}", f".{relay_name}"))
+        for relay_name in relay_names
+    )
+
+
+def is_agent_internal_tool_name(name: str) -> bool:
+    return name.strip().lower() in AGENT_INTERNAL_TOOL_NAMES
 
 
 def claims_cloud_artifact(text: str) -> bool:

@@ -56,9 +56,13 @@ does not depend on an unverified Agent WebSocket result message.
 When client tools are supplied, they are authoritative for workspace side
 effects. The relay prompt forbids Tabbit's native E2B/sandbox tools from
 substituting for client filesystem, shell, code, test, build, or git tools.
-The bridge observes Agent tool events and treats every non-`dispatch` call as
-an upstream-native route. If a task finishes through a native tool without any
-MCP dispatch, the bridge retries once with an explicit correction; a second
+The bridge observes Agent tool events and treats non-relay calls as
+upstream-native routes, except for Tabbit's internal `plan_track` and
+`termination` lifecycle tools. The public relay tool is named
+`client_tool_dispatch`, with legacy `dispatch` accepted only for in-flight
+compatibility, so the model cannot confuse the relay transport name with a
+client tool name. If a task finishes through a real native tool without any MCP
+dispatch, the bridge retries once with an explicit correction; a second
 violation is returned as an error instead of falsely claiming that a cloud
 `/mnt/work` artifact exists in the user's local workspace.
 
@@ -93,6 +97,11 @@ network access, while production uses the official runtime behavior.
 
 ## Known limitations
 
+- Model selection and billing are separate upstream concerns. The bridge sends
+  the resolved `selected_model` requested by the client, but Tabbit records MCP
+  Task-mode execution under the `agent` quota scene even when `Default` is free
+  in ordinary chat. New user turns create new Agent tasks; function-call result
+  continuations stay on the existing task.
 - `responses_bridge.py` remains above the preferred module-size threshold while
   the Agent state machine, native-route guard, prompt fitting, and reference
   packaging are still evolving together. The prompt/reference helpers are pure

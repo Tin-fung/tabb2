@@ -73,9 +73,16 @@ tools continue to use the existing direct chat transport.
 The relay must be reachable from Tabbit through public HTTPS. Configure it in
 Tabbit as `https://YOUR_HOST/mcp/relay` with
 `Authorization: Bearer <responses.relay_token>`. The relay exposes one MCP tool
-named `dispatch`; the bridge maps it to the function tools supplied by Codex.
-The relay token is generated automatically and can be copied from the admin
-Settings page. Restart tabb2 after changing relay settings.
+named `client_tool_dispatch`; it maps the call to the function tools supplied
+by Codex/OpenCode. The relay token is generated automatically and can be copied
+from the admin Settings page. Restart tabb2 after changing relay settings.
+
+Model selection is still honored in Agent bridge mode (`default`/`best` maps
+to Tabbit `Default`, explicit model names remain explicit). However Tabbit bills
+these requests under the `agent`/任务 scene because MCP requires Task mode. A
+model marked free for ordinary chat may therefore still consume Agent quota.
+Tool-result continuations reuse the same Agent task; a new user turn starts a
+new task and may create another Agent usage record.
 
 Codex custom provider example:
 

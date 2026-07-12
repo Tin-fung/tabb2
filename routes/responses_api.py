@@ -25,6 +25,8 @@ from core.responses_bridge import (
     BridgeTurn,
     ResponsesBridge,
     ResponsesBridgeError,
+    LEGACY_MCP_RELAY_TOOL_NAME,
+    MCP_RELAY_TOOL_NAME,
 )
 from core.tabbit_client import resolve_model
 from core.token_manager import TokenManager
@@ -269,23 +271,36 @@ async def mcp_relay(
     if request.method == "tools/list":
         return jsonrpc_result(request.id, {"tools": [relay_tool_definition()]})
     if request.method == "tools/call":
-        if params.get("name") != "dispatch":
+        if params.get("name") not in {
+            MCP_RELAY_TOOL_NAME,
+            LEGACY_MCP_RELAY_TOOL_NAME,
+        }:
             return jsonrpc_error(request.id, -32602, "unknown relay tool")
         arguments = params.get("arguments")
         if not isinstance(arguments, dict):
             return jsonrpc_error(request.id, -32602, "arguments must be an object")
+        client_tool_name = str(
+            arguments.get("client_tool_name") or arguments.get("name") or ""
+        )
+        bridge_suffix = str(arguments.get("bridge_id") or "")[-8:]
         logger.info(
             "MCP dispatch request: bridge=%s tool=%s",
-            str(arguments.get("bridge_id") or "")[-8:],
-            str(arguments.get("name") or ""),
+            bridge_suffix,
+            client_tool_name,
         )
         try:
             result = await get_bridge().relay_call(
                 bridge_id=str(arguments.get("bridge_id") or ""),
-                name=str(arguments.get("name") or ""),
+                name=client_tool_name,
                 arguments=arguments.get("arguments", {}),
             )
         except ResponsesBridgeError as exc:
+            logger.warning(
+                "MCP dispatch rejected: bridge=%s tool=%s error=%s",
+                bridge_suffix,
+                client_tool_name,
+                str(exc),
+            )
             return jsonrpc_result(
                 request.id,
                 {
@@ -311,19 +326,21 @@ def verify_relay_auth(authorization: str | None) -> None:
 
 def relay_tool_definition() -> dict[str, Any]:
     return {
-        "name": "dispatch",
+        "name": MCP_RELAY_TOOL_NAME,
         "description": (
             "Dispatch one client-side function call and wait for its result. "
-            "Use the bridge_id supplied in the task instructions verbatim."
+            "Use the bridge_id supplied in the task instructions verbatim. "
+            "client_tool_name must be one of the supplied OpenCode/Codex tools, "
+            "not the relay tool name itself."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "bridge_id": {"type": "string"},
-                "name": {"type": "string"},
+                "client_tool_name": {"type": "string"},
                 "arguments": {"type": "object"},
             },
-            "required": ["bridge_id", "name", "arguments"],
+            "required": ["bridge_id", "client_tool_name", "arguments"],
             "additionalProperties": False,
         },
     }

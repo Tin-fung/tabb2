@@ -4,6 +4,7 @@ import unittest
 
 from core.responses_bridge import (
     AGENT_CONTENT_LIMIT,
+    MCP_RELAY_TOOL_NAME,
     BridgeCallNotFound,
     BridgeStartRequest,
     ResponsesBridge,
@@ -352,6 +353,44 @@ class ResponsesBridgeTest(unittest.IsolatedAsyncioTestCase):
         finally:
             await bridge.close_all()
 
+    async def test_internal_agent_controls_complete_without_retry(self):
+        holder = {"attempt": 0}
+
+        class InternalControlAgent(FakeAgent):
+            async def run_task(agent_self, bootstrap):
+                holder["attempt"] += 1
+                yield AgentEvent(
+                    type="message_tool_calls",
+                    data={
+                        "tool_calls": [
+                            {"function": {"name": "plan_track"}},
+                            {"function": {"name": "termination"}},
+                        ]
+                    },
+                )
+                yield AgentEvent(
+                    type="task_completed",
+                    data={"content": "planned answer"},
+                )
+
+        bridge = ResponsesBridge(agent_factory=InternalControlAgent)
+        try:
+            session = await bridge.start(
+                BridgeStartRequest(
+                    client=FakeTabbitClient(),
+                    model="Default",
+                    requested_model="default",
+                    prompt="answer without workspace changes",
+                    tools=[{"type": "function", "name": "write"}],
+                )
+            )
+
+            final = await bridge.next_turn(session)
+            self.assertEqual(final.text, "planned answer")
+            self.assertEqual(holder["attempt"], 1)
+        finally:
+            await bridge.close_all()
+
     def test_prompt_injects_bridge_id_and_client_tool_schema(self):
         prompt = build_relay_prompt(
             "do it",
@@ -361,7 +400,8 @@ class ResponsesBridgeTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("bridge_123", prompt)
         self.assertIn('"name":"shell"', prompt)
-        self.assertIn("MCP tool named dispatch", prompt)
+        self.assertIn(f"MCP tool named {MCP_RELAY_TOOL_NAME}", prompt)
+        self.assertIn("client_tool_name", prompt)
         self.assertIn("LOCAL TOOL ROUTING - MANDATORY", prompt)
         self.assertIn("/mnt/work", prompt)
 
@@ -379,12 +419,29 @@ class ResponsesBridgeTest(unittest.IsolatedAsyncioTestCase):
             {
                 "tool_calls": [
                     {"function": {"name": "dispatch"}},
+                    {"function": {"name": MCP_RELAY_TOOL_NAME}},
+                    {"function": {"name": "plan_track"}},
+                    {"function": {"name": "termination"}},
                     {"function": {"name": "cloud_code_sandbox"}},
                 ]
             },
         )
 
         self.assertEqual(native, {"cloud_code_sandbox"})
+
+    def test_internal_agent_control_tools_do_not_trigger_retry(self):
+        native = extract_native_agent_tool_names(
+            "message_tool_calls",
+            {
+                "tool_calls": [
+                    {"function": {"name": "plan_track"}},
+                    {"function": {"name": "termination"}},
+                ]
+            },
+        )
+
+        self.assertEqual(native, set())
+        self.assertFalse(should_retry_native_route(native, False, "done"))
 
     def test_native_route_without_dispatch_is_retried(self):
         self.assertTrue(

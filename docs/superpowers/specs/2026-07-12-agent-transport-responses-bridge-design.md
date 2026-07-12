@@ -109,12 +109,14 @@ the client believes its own workspace changed.
 When a Responses or Chat Completions request supplies client tools, the bridge
 therefore treats those tools as authoritative:
 
-1. The task prompt requires MCP `dispatch` for filesystem, repository, shell,
+1. The task prompt requires MCP `client_tool_dispatch` for filesystem,
+   repository, shell,
    code execution, test, build, and git operations.
 2. It explicitly prohibits native E2B/sandbox tools from substituting for a
    client tool or claiming local side effects.
-3. Agent WebSocket tool events are inspected. `dispatch` belongs to the relay;
-   other tool names are upstream-native for this bridge path.
+3. Agent WebSocket tool events are inspected. `client_tool_dispatch` belongs
+   to the relay; `plan_track` and `termination` are harmless Agent lifecycle
+   controls; other tool names are upstream-native for this bridge path.
 4. A native-only attempt is discarded and retried once with the observed tool
    names included in the correction.
 5. A second native-only attempt fails explicitly. The bridge never reports a
@@ -123,6 +125,12 @@ therefore treats those tools as authoritative:
 The retry guard compensates for the absence of a verified upstream field that
 fully disables native tools. It does not expose tool arguments, authorization
 headers, cookies, or sandbox credentials in logs.
+
+The relay previously used the generic name `dispatch` and an inner argument
+also named `name`. With large OpenCode catalogs the model could set the target
+tool to `dispatch` itself. The relay now exposes `client_tool_dispatch` and the
+unambiguous `client_tool_name` field. The server still accepts the legacy shape
+for already-running Agent tasks, but no longer advertises it.
 
 ## Phase 5: Agent Long-Context References
 
