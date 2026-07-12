@@ -166,10 +166,11 @@ class ResponsesBridge:
                         text_parts.append(text)
                 elif event.type == "task_completed":
                     final_text = extract_agent_text(event.data)
-                    if final_text:
-                        text_parts.append(final_text)
                     await session.outcomes.put(
-                        BridgeTurn(kind="message", text="".join(text_parts))
+                        BridgeTurn(
+                            kind="message",
+                            text=merge_agent_text("".join(text_parts), final_text),
+                        )
                     )
                     return
                 elif event.type in {"error", "audit_failure", "task_limit"}:
@@ -543,6 +544,16 @@ def extract_agent_text(data: dict[str, Any]) -> str:
             if nested:
                 return nested
     return ""
+
+
+def merge_agent_text(streamed: str, final_text: str) -> str:
+    if not final_text:
+        return streamed
+    if not streamed or final_text.startswith(streamed):
+        return final_text
+    if streamed.endswith(final_text):
+        return streamed
+    return streamed + final_text
 
 
 def extract_agent_error(event_type: str, data: dict[str, Any]) -> str:

@@ -8,6 +8,7 @@ from core.responses_bridge import (
     BridgeStartRequest,
     ResponsesBridge,
     build_relay_prompt,
+    merge_agent_text,
 )
 from core.tabbit_agent import AgentEvent, AgentTaskBootstrap
 
@@ -271,6 +272,11 @@ class ResponsesBridgeTest(unittest.IsolatedAsyncioTestCase):
 
     def test_prompt_without_tools_is_unchanged(self):
         self.assertEqual(build_relay_prompt("hello", "bridge_1", []), "hello")
+
+    def test_final_agent_content_does_not_duplicate_streamed_text(self):
+        self.assertEqual(merge_agent_text("READY", "READY"), "READY")
+        self.assertEqual(merge_agent_text("REA", "READY"), "READY")
+        self.assertEqual(merge_agent_text("prefix READY", "READY"), "prefix READY")
 
     def test_large_open_code_tool_catalog_fits_agent_gateway_limit(self):
         tools = []
