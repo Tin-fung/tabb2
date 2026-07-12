@@ -53,6 +53,15 @@ identifier mappings, and pending MCP result futures. The MCP request remains
 blocked until the Responses client returns the matching result, so the bridge
 does not depend on an unverified Agent WebSocket result message.
 
+When client tools are supplied, they are authoritative for workspace side
+effects. The relay prompt forbids Tabbit's native E2B/sandbox tools from
+substituting for client filesystem, shell, code, test, build, or git tools.
+The bridge observes Agent tool events and treats every non-`dispatch` call as
+an upstream-native route. If a task finishes through a native tool without any
+MCP dispatch, the bridge retries once with an explicit correction; a second
+violation is returned as an error instead of falsely claiming that a cloud
+`/mnt/work` artifact exists in the user's local workspace.
+
 Responses continuations use `previous_response_id` or `call_id`. Chat
 Completions has no response continuation identifier, so its adapter resolves
 the session through the pending `tool_call_id`. Historical tool messages whose
@@ -94,6 +103,10 @@ network access, while production uses the official runtime behavior.
 - Agent relay prompts are capped below the verified `/chat/send` content limit.
   Large OpenCode/Codex tool catalogs degrade from full schemas to compact
   parameter summaries and finally tool signatures instead of triggering 492.
+- Native-tool rejection is a routing guard, not an upstream capability switch:
+  Tabbit currently exposes no verified `tool_choice` field that disables its
+  native sandbox. A model that ignores both guarded attempts produces an
+  explicit bridge error and requires further upstream protocol work.
 - The current official client version must remain synchronized to avoid 493.
 
 ## Change history
@@ -102,3 +115,6 @@ network access, while production uses the official runtime behavior.
 - 2026-07-12: added the authenticated MCP relay and stateful Responses bridge.
 - 2026-07-12: reused the bridge for Chat Completions tool calls and tool-result
   continuations, including SSE `delta.tool_calls` output.
+- 2026-07-12: made client tools authoritative in Agent bridge mode, added
+  native sandbox interception detection, one corrective retry, and MCP method
+  observability without logging arguments or credentials.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import logging
 import time
 import uuid
 from typing import Any
@@ -31,6 +32,7 @@ from routes import openai_compat
 
 
 router = APIRouter()
+logger = logging.getLogger("tabbit2openai")
 
 _tm: TokenManager | None = None
 _cfg: ConfigManager | None = None
@@ -251,6 +253,7 @@ async def mcp_relay(
 ):
     verify_relay_auth(authorization)
     params = request.params or {}
+    logger.info("MCP relay request: method=%s", request.method)
     if request.method == "initialize":
         requested_version = params.get("protocolVersion")
         result = {
@@ -271,6 +274,11 @@ async def mcp_relay(
         arguments = params.get("arguments")
         if not isinstance(arguments, dict):
             return jsonrpc_error(request.id, -32602, "arguments must be an object")
+        logger.info(
+            "MCP dispatch request: bridge=%s tool=%s",
+            str(arguments.get("bridge_id") or "")[-8:],
+            str(arguments.get("name") or ""),
+        )
         try:
             result = await get_bridge().relay_call(
                 bridge_id=str(arguments.get("bridge_id") or ""),

@@ -8,7 +8,10 @@ from core.responses_bridge import (
     BridgeStartRequest,
     ResponsesBridge,
     build_relay_prompt,
+    claims_cloud_artifact,
+    extract_native_agent_tool_names,
     merge_agent_text,
+    should_retry_native_route,
 )
 from core.tabbit_agent import AgentEvent, AgentTaskBootstrap
 
@@ -259,6 +262,69 @@ class ResponsesBridgeTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(Exception, "websocket closed"):
             await relay_task
 
+    async def test_native_sandbox_route_retries_then_dispatches_locally(self):
+        holder = {"attempt": 0}
+
+        class NativeThenDispatchAgent(FakeAgent):
+            async def run_task(agent_self, bootstrap):
+                holder["attempt"] += 1
+                if holder["attempt"] == 1:
+                    yield AgentEvent(
+                        type="message_tool_calls",
+                        data={
+                            "tool_calls": [
+                                {"function": {"name": "cloud_code_sandbox"}}
+                            ]
+                        },
+                    )
+                    yield AgentEvent(
+                        type="task_completed",
+                        data={"content": "Created /mnt/work/test.txt"},
+                    )
+                    return
+                bridge_id = next(
+                    line.split(":", 1)[1].strip()
+                    for line in agent_self.request.content.splitlines()
+                    if line.startswith("bridge_id:")
+                )
+                result = await bridge.relay_call(
+                    bridge_id=bridge_id,
+                    name="write",
+                    arguments={"path": "test.txt", "content": "ready"},
+                )
+                yield AgentEvent(
+                    type="task_completed",
+                    data={"content": f"local:{result}"},
+                )
+
+        bridge = ResponsesBridge(
+            agent_factory=NativeThenDispatchAgent,
+            relay_timeout_seconds=5,
+        )
+        try:
+            session = await bridge.start(
+                BridgeStartRequest(
+                    client=FakeTabbitClient(),
+                    model="Default",
+                    requested_model="best",
+                    prompt="create test.txt locally",
+                    tools=[{"type": "function", "name": "write"}],
+                )
+            )
+
+            turn = await bridge.next_turn(session)
+            self.assertEqual(holder["attempt"], 2)
+            self.assertEqual(turn.kind, "function_call")
+            self.assertEqual(turn.function_calls[0].name, "write")
+            bridge.submit_outputs(
+                session,
+                [(turn.function_calls[0].call_id, "written locally")],
+            )
+            final = await bridge.next_turn(session)
+            self.assertEqual(final.text, "local:written locally")
+        finally:
+            await bridge.close_all()
+
     def test_prompt_injects_bridge_id_and_client_tool_schema(self):
         prompt = build_relay_prompt(
             "do it",
@@ -269,6 +335,8 @@ class ResponsesBridgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertIn("bridge_123", prompt)
         self.assertIn('"name":"shell"', prompt)
         self.assertIn("MCP tool named dispatch", prompt)
+        self.assertIn("LOCAL TOOL ROUTING - MANDATORY", prompt)
+        self.assertIn("/mnt/work", prompt)
 
     def test_prompt_without_tools_is_unchanged(self):
         self.assertEqual(build_relay_prompt("hello", "bridge_1", []), "hello")
@@ -277,6 +345,42 @@ class ResponsesBridgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(merge_agent_text("READY", "READY"), "READY")
         self.assertEqual(merge_agent_text("REA", "READY"), "READY")
         self.assertEqual(merge_agent_text("prefix READY", "READY"), "prefix READY")
+
+    def test_detects_native_agent_tools_but_not_mcp_dispatch(self):
+        native = extract_native_agent_tool_names(
+            "message_tool_calls",
+            {
+                "tool_calls": [
+                    {"function": {"name": "dispatch"}},
+                    {"function": {"name": "cloud_code_sandbox"}},
+                ]
+            },
+        )
+
+        self.assertEqual(native, {"cloud_code_sandbox"})
+
+    def test_native_route_without_dispatch_is_retried(self):
+        self.assertTrue(
+            should_retry_native_route({"cloud_code_sandbox"}, False, "done")
+        )
+        self.assertFalse(
+            should_retry_native_route({"cloud_code_sandbox"}, True, "done")
+        )
+        self.assertTrue(
+            claims_cloud_artifact("Created the file at /mnt/work/test.txt")
+        )
+        self.assertFalse(claims_cloud_artifact("What is /mnt/work used for?"))
+
+    def test_retry_prompt_names_rejected_native_tools(self):
+        prompt = build_relay_prompt(
+            "create test.txt",
+            "bridge_retry",
+            [{"type": "function", "name": "write"}],
+            retry_native_tools=("cloud_code_sandbox",),
+        )
+
+        self.assertIn("cloud_code_sandbox", prompt)
+        self.assertIn("Do not use them again", prompt)
 
     def test_large_open_code_tool_catalog_fits_agent_gateway_limit(self):
         tools = []

@@ -24,6 +24,7 @@ from core.tabbit_client import TabbitClient
 CALL_BATCH_WINDOW_SECONDS = 0.05
 AGENT_CONTENT_LIMIT = 19_500
 AGENT_PROMPT_RESERVE = 8_000
+MAX_NATIVE_ROUTE_ATTEMPTS = 2
 logger = logging.getLogger("tabbit2openai")
 
 
@@ -77,6 +78,7 @@ class BridgeSession:
     outcomes: asyncio.Queue[BridgeTurn] = field(default_factory=asyncio.Queue)
     pending_calls: dict[str, PendingRelayCall] = field(default_factory=dict)
     response_ids: set[str] = field(default_factory=set)
+    dispatch_count: int = 0
     runner: asyncio.Task | None = None
     closed: bool = False
 
@@ -141,48 +143,79 @@ class ResponsesBridge:
         prompt: str,
         tools: list[dict[str, Any]],
     ) -> None:
-        text_parts: list[str] = []
         try:
-            chat_session_id = await session.client.create_chat_session()
-            agent = self._agent_factory(session.client)
-            content = build_relay_prompt(prompt, session.bridge_id, tools)
-            logger.info(
-                "agent relay prompt prepared: chars=%d tools=%d",
-                len(content),
-                len(session.allowed_tools),
-            )
-            bootstrap = await agent.bootstrap_task(
-                AgentTaskRequest(
-                    session_id=chat_session_id,
-                    content=content,
-                    model=session.model,
+            retry_native_tools: tuple[str, ...] = ()
+            for attempt in range(1, MAX_NATIVE_ROUTE_ATTEMPTS + 1):
+                text_parts: list[str] = []
+                final_text = ""
+                native_tools: set[str] = set()
+                dispatch_count_before = session.dispatch_count
+                chat_session_id = await session.client.create_chat_session()
+                agent = self._agent_factory(session.client)
+                content = build_relay_prompt(
+                    prompt,
+                    session.bridge_id,
+                    tools,
+                    retry_native_tools=retry_native_tools,
                 )
-            )
-            async for event in agent.run_task(bootstrap):
-                session.touched_at = time.time()
-                if event.type == "execute_content":
-                    text = extract_agent_text(event.data)
-                    if text:
-                        text_parts.append(text)
-                elif event.type == "task_completed":
-                    final_text = extract_agent_text(event.data)
-                    await session.outcomes.put(
-                        BridgeTurn(
-                            kind="message",
-                            text=merge_agent_text("".join(text_parts), final_text),
+                logger.info(
+                    "agent relay prompt prepared: chars=%d tools=%d attempt=%d",
+                    len(content),
+                    len(session.allowed_tools),
+                    attempt,
+                )
+                bootstrap = await agent.bootstrap_task(
+                    AgentTaskRequest(
+                        session_id=chat_session_id,
+                        content=content,
+                        model=session.model,
+                    )
+                )
+                async for event in agent.run_task(bootstrap):
+                    session.touched_at = time.time()
+                    native_tools.update(
+                        extract_native_agent_tool_names(event.type, event.data)
+                    )
+                    if event.type == "execute_content":
+                        text = extract_agent_text(event.data)
+                        if text:
+                            text_parts.append(text)
+                    elif event.type == "task_completed":
+                        final_text = extract_agent_text(event.data)
+                        break
+                    elif event.type in {"error", "audit_failure", "task_limit"}:
+                        error = extract_agent_error(event.type, event.data)
+                        await session.outcomes.put(
+                            BridgeTurn(kind="error", error=error)
                         )
-                    )
-                    return
-                elif event.type in {"error", "audit_failure", "task_limit"}:
-                    error = extract_agent_error(event.type, event.data)
+                        self._fail_pending_calls(session, error)
+                        return
+
+                merged_text = merge_agent_text("".join(text_parts), final_text)
+                dispatched = session.dispatch_count > dispatch_count_before
+                if not should_retry_native_route(native_tools, dispatched, merged_text):
                     await session.outcomes.put(
-                        BridgeTurn(kind="error", error=error)
+                        BridgeTurn(kind="message", text=merged_text)
                     )
-                    self._fail_pending_calls(session, error)
                     return
-            await session.outcomes.put(
-                BridgeTurn(kind="message", text="".join(text_parts))
-            )
+
+                retry_native_tools = tuple(sorted(native_tools)) or (
+                    "cloud sandbox artifact",
+                )
+                logger.warning(
+                    "agent native route rejected: bridge=%s attempt=%d tools=%s cloud_artifact=%s",
+                    session.bridge_id[-8:],
+                    attempt,
+                    list(retry_native_tools),
+                    claims_cloud_artifact(merged_text),
+                )
+                if attempt == MAX_NATIVE_ROUTE_ATTEMPTS:
+                    error = (
+                        "Tabbit native sandbox intercepted a client-side tool task; "
+                        "no MCP dispatch reached the OpenCode workspace"
+                    )
+                    await session.outcomes.put(BridgeTurn(kind="error", error=error))
+                    return
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -208,6 +241,13 @@ class ResponsesBridge:
             raise ResponsesBridgeError(f"relay tool is not allowed: {name}")
         arguments_json = normalize_arguments(arguments)
         call_id = f"call_{uuid.uuid4().hex}"
+        session.dispatch_count += 1
+        logger.info(
+            "agent MCP dispatch accepted: bridge=%s tool=%s count=%d",
+            bridge_id[-8:],
+            name,
+            session.dispatch_count,
+        )
         loop = asyncio.get_running_loop()
         pending = PendingRelayCall(
             call_id=call_id,
@@ -381,6 +421,8 @@ def build_relay_prompt(
     prompt: str,
     bridge_id: str,
     tools: list[dict[str, Any]],
+    *,
+    retry_native_tools: tuple[str, ...] = (),
 ) -> str:
     tool_specs = []
     for tool in tools:
@@ -400,10 +442,25 @@ def build_relay_prompt(
         )
     if not tool_specs:
         return truncate_middle(prompt, AGENT_CONTENT_LIMIT)
+    retry_notice = ""
+    if retry_native_tools:
+        retry_notice = (
+            "A previous attempt incorrectly used these Tabbit cloud tools: "
+            f"{', '.join(retry_native_tools)}. Do not use them again. "
+            "Retry the original task through MCP dispatch.\n"
+        )
     relay_header = (
-        "You can call client-side tools through the MCP tool named dispatch. "
-        "For every tool call, pass bridge_id exactly as provided, set name to "
-        "the requested client tool name, and put its arguments object in "
+        "[LOCAL TOOL ROUTING - MANDATORY]\n"
+        "Client tools are authoritative and execute in the user's actual OpenCode "
+        "workspace. For filesystem, repository, shell, command, code execution, "
+        "test, build, or git operations, you MUST call the MCP tool named dispatch. "
+        "Do not use Tabbit built-in sandbox, E2B, code interpreter, terminal, "
+        "browser, computer, or filesystem tools as substitutes. Never create or "
+        "claim to create client files under /mnt/work, /tmp, or another cloud "
+        "sandbox. Do not claim a local side effect unless dispatch returned success.\n"
+        f"{retry_notice}"
+        "For every client tool call, pass bridge_id exactly as provided, set name "
+        "to the requested client tool name, and put its arguments object in "
         "arguments. Never invent a different bridge_id. After dispatch returns, "
         "continue the task using its result.\n\n"
         f"bridge_id: {bridge_id}\n"
@@ -554,6 +611,80 @@ def merge_agent_text(streamed: str, final_text: str) -> str:
     if streamed.endswith(final_text):
         return streamed
     return streamed + final_text
+
+
+def extract_agent_tool_names(event_type: str, data: dict[str, Any]) -> set[str]:
+    if event_type == "message_tool_calls":
+        return extract_tool_call_list_names(data.get("tool_calls"))
+    if event_type == "message_tool_call_delta":
+        return compact_name_set(extract_tool_call_name(data))
+    if event_type in {"tool_start", "tool_finish"}:
+        return compact_name_set(data.get("tool_call_name") or data.get("name"))
+    return set()
+
+
+def extract_tool_call_list_names(value: Any) -> set[str]:
+    if not isinstance(value, list):
+        return set()
+    return {
+        name
+        for tool_call in value
+        if isinstance(tool_call, dict)
+        for name in compact_name_set(extract_tool_call_name(tool_call))
+    }
+
+
+def extract_tool_call_name(tool_call: dict[str, Any]) -> Any:
+    function = tool_call.get("function")
+    function_name = function.get("name") if isinstance(function, dict) else None
+    return function_name or tool_call.get("tool_call_name") or tool_call.get("name")
+
+
+def compact_name_set(value: Any) -> set[str]:
+    return {value} if isinstance(value, str) and value else set()
+
+
+def extract_native_agent_tool_names(event_type: str, data: dict[str, Any]) -> set[str]:
+    return {
+        name
+        for name in extract_agent_tool_names(event_type, data)
+        if not is_dispatch_tool_name(name)
+    }
+
+
+def is_dispatch_tool_name(name: str) -> bool:
+    normalized = name.strip().lower()
+    return normalized == "dispatch" or normalized.endswith(("__dispatch", ".dispatch"))
+
+
+def claims_cloud_artifact(text: str) -> bool:
+    lowered = text.lower()
+    if not any(marker in lowered for marker in ("/mnt/work", "e2b", "cloud sandbox")):
+        return False
+    action_markers = (
+        "created",
+        "generated",
+        "saved",
+        "written",
+        "located",
+        "file",
+        "已创建",
+        "已生成",
+        "已保存",
+        "写入",
+        "文件",
+    )
+    return any(marker in lowered for marker in action_markers)
+
+
+def should_retry_native_route(
+    native_tools: set[str],
+    dispatched: bool,
+    final_text: str,
+) -> bool:
+    if dispatched:
+        return False
+    return bool(native_tools) or claims_cloud_artifact(final_text)
 
 
 def extract_agent_error(event_type: str, data: dict[str, Any]) -> str:

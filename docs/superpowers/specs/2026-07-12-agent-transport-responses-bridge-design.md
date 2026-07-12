@@ -99,6 +99,31 @@ same pending MCP state machine:
 Chat requests without client function tools remain on the existing direct
 completion path to minimize compatibility regressions.
 
+## Phase 4: Client-Authoritative Tool Routing
+
+Tabbit Agent tasks can see both the configured MCP relay and Tabbit-native
+cloud tools. For local coding clients this creates an unsafe ambiguity: a file
+operation can succeed inside Tabbit's temporary E2B `/mnt/work` directory while
+the client believes its own workspace changed.
+
+When a Responses or Chat Completions request supplies client tools, the bridge
+therefore treats those tools as authoritative:
+
+1. The task prompt requires MCP `dispatch` for filesystem, repository, shell,
+   code execution, test, build, and git operations.
+2. It explicitly prohibits native E2B/sandbox tools from substituting for a
+   client tool or claiming local side effects.
+3. Agent WebSocket tool events are inspected. `dispatch` belongs to the relay;
+   other tool names are upstream-native for this bridge path.
+4. A native-only attempt is discarded and retried once with the observed tool
+   names included in the correction.
+5. A second native-only attempt fails explicitly. The bridge never reports a
+   cloud sandbox artifact as a local OpenCode/Codex file.
+
+The retry guard compensates for the absence of a verified upstream field that
+fully disables native tools. It does not expose tool arguments, authorization
+headers, cookies, or sandbox credentials in logs.
+
 ## Security Boundaries
 
 - Tabbit cookies, signing keys, sandbox credentials, and MCP authorization
