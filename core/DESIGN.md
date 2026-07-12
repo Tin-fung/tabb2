@@ -23,7 +23,8 @@ routes/ ──> token_manager ──> TabbitClient ──> Tabbit HTTP APIs
                                ├── signed /chat/send
                                └── /api/agent/v2/ws
                                       │
-Tabbit MCP HTTPS ──> ResponsesBridge ─┴──> /v1/responses (Codex)
+Tabbit MCP HTTPS ──> ResponsesBridge ─┬──> /v1/responses (Codex)
+                                      └──> /v1/chat/completions
 ```
 
 ## Key decisions
@@ -51,6 +52,12 @@ independent of downstream API policy.
 identifier mappings, and pending MCP result futures. The MCP request remains
 blocked until the Responses client returns the matching result, so the bridge
 does not depend on an unverified Agent WebSocket result message.
+
+Responses continuations use `previous_response_id` or `call_id`. Chat
+Completions has no response continuation identifier, so its adapter resolves
+the session through the pending `tool_call_id`. Historical tool messages whose
+IDs are no longer pending stay ordinary conversation history and do not reopen
+an expired bridge session.
 
 Task mode still requires a server-created chat session. The bridge reuses
 `TabbitClient.create_chat_session()` before the signed `/chat/send` bootstrap;
@@ -90,3 +97,5 @@ network access, while production uses the official runtime behavior.
 
 - 2026-07-12: added the official signed Task-mode and Agent v2 transport.
 - 2026-07-12: added the authenticated MCP relay and stateful Responses bridge.
+- 2026-07-12: reused the bridge for Chat Completions tool calls and tool-result
+  continuations, including SSE `delta.tool_calls` output.

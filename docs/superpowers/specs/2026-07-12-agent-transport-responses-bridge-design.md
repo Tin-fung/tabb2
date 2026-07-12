@@ -83,6 +83,22 @@ The implementation adds `/v1/responses` and `/mcp/relay`:
 The relay is required because Tabbit's MCP executor can only reach HTTPS
 servers; it cannot call a Codex process on localhost directly.
 
+## Phase 3: Chat Completions Bridge (implemented, experimental)
+
+When a Chat Completions request supplies function tools, the route reuses the
+same pending MCP state machine:
+
+1. Map a pending relay invocation to `choices[0].message.tool_calls`.
+2. For streaming requests, emit `choices[0].delta.tool_calls` and finish with
+   `finish_reason=tool_calls`.
+3. Locate the pending bridge session from a later `role=tool` message's
+   `tool_call_id`.
+4. Deliver the tool content to the blocked relay request and wait for the next
+   tool call or final Agent message.
+
+Chat requests without client function tools remain on the existing direct
+completion path to minimize compatibility regressions.
+
 ## Security Boundaries
 
 - Tabbit cookies, signing keys, sandbox credentials, and MCP authorization

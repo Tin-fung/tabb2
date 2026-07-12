@@ -17,7 +17,7 @@ upstream transport.
 - `tabbit_agent.py`: official Task-mode `/chat/send` signing and Agent v2
   WebSocket transport.
 - `responses_bridge.py`: pending MCP invocation store and Responses
-  `function_call_output` continuation state machine.
+  `function_call_output` / Chat `tool_call_id` continuation state machine.
 - `token_manager.py`: token rotation, health, cooldown, and refreshed-cookie
   persistence.
 - `claude_compat.py`, `tool_policy.py`, `tool_events.py`: downstream protocol

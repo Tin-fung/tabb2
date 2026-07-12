@@ -20,6 +20,9 @@ from core.tabbit_agent import AgentTaskRequest, TabbitAgentClient
 from core.tabbit_client import TabbitClient
 
 
+CALL_BATCH_WINDOW_SECONDS = 0.05
+
+
 class ResponsesBridgeError(RuntimeError):
     """Base error for invalid or expired bridge operations."""
 
@@ -62,6 +65,7 @@ class BridgeSession:
     requested_model: str
     client: TabbitClient
     token_id: str = ""
+    token_name: str = ""
     owns_client: bool = False
     allowed_tools: frozenset[str] = frozenset()
     created_at: float = field(default_factory=time.time)
@@ -81,6 +85,7 @@ class BridgeStartRequest:
     prompt: str
     tools: list[dict[str, Any]]
     token_id: str = ""
+    token_name: str = ""
     owns_client: bool = False
 
 
@@ -114,6 +119,7 @@ class ResponsesBridge:
             requested_model=request.requested_model,
             client=request.client,
             token_id=request.token_id,
+            token_name=request.token_name,
             owns_client=request.owns_client,
             allowed_tools=frozenset(extract_tool_names(request.tools)),
         )
@@ -233,8 +239,11 @@ class ResponsesBridge:
         calls = list(first.function_calls)
         while True:
             try:
-                queued = session.outcomes.get_nowait()
-            except asyncio.QueueEmpty:
+                queued = await asyncio.wait_for(
+                    session.outcomes.get(),
+                    timeout=CALL_BATCH_WINDOW_SECONDS,
+                )
+            except asyncio.TimeoutError:
                 break
             if queued.kind == "function_call":
                 calls.extend(queued.function_calls)
@@ -271,11 +280,32 @@ class ResponsesBridge:
             raise BridgeSessionNotFound("previous response or call_id is unknown")
         return session
 
+    def pending_session_for_call_ids(
+        self,
+        call_ids: list[str],
+    ) -> BridgeSession | None:
+        candidates = {
+            self._call_sessions[call_id]
+            for call_id in call_ids
+            if call_id in self._call_sessions
+        }
+        if len(candidates) > 1:
+            raise ResponsesBridgeError("tool outputs span multiple bridge sessions")
+        if not candidates:
+            return None
+        return self._sessions.get(candidates.pop())
+
     def submit_outputs(
         self,
         session: BridgeSession,
         outputs: list[tuple[str, str]],
     ) -> None:
+        provided = {call_id for call_id, _ in outputs}
+        missing = set(session.pending_calls) - provided
+        if missing:
+            raise BridgeCallNotFound(
+                "missing outputs for pending calls: " + ", ".join(sorted(missing))
+            )
         for call_id, output in outputs:
             pending = session.pending_calls.get(call_id)
             if pending is None:

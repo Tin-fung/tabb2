@@ -141,6 +141,78 @@ class ResponsesBridgeTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(BridgeCallNotFound):
             self.bridge.submit_outputs(session, [("call_missing", "result")])
 
+    async def test_partial_parallel_outputs_are_rejected_before_resuming(self):
+        from core.responses_bridge import PendingRelayCall
+
+        session = await self.bridge.start(
+            BridgeStartRequest(
+                client=FakeTabbitClient(),
+                model="Default",
+                requested_model="best",
+                prompt="hello",
+                tools=[
+                    {"type": "function", "name": "first"},
+                    {"type": "function", "name": "second"},
+                ],
+            )
+        )
+        loop = asyncio.get_running_loop()
+        session.pending_calls = {
+            "call_first": PendingRelayCall(
+                "call_first", "first", "{}", loop.create_future()
+            ),
+            "call_second": PendingRelayCall(
+                "call_second", "second", "{}", loop.create_future()
+            ),
+        }
+
+        with self.assertRaisesRegex(Exception, "call_second"):
+            self.bridge.submit_outputs(
+                session, [("call_first", "first result")]
+            )
+        self.assertFalse(session.pending_calls["call_first"].result.done())
+        for pending in session.pending_calls.values():
+            pending.result.cancel()
+        session.pending_calls.clear()
+
+    async def test_parallel_relay_calls_are_batched_into_one_turn(self):
+        session = await self.bridge.start(
+            BridgeStartRequest(
+                client=FakeTabbitClient(),
+                model="Default",
+                requested_model="best",
+                prompt="hello",
+                tools=[
+                    {"type": "function", "name": "first"},
+                    {"type": "function", "name": "second"},
+                ],
+            )
+        )
+        relay_tasks = [
+            asyncio.create_task(
+                self.bridge.relay_call(
+                    bridge_id=session.bridge_id,
+                    name=name,
+                    arguments={"value": name},
+                )
+            )
+            for name in ("first", "second")
+        ]
+
+        turn = await self.bridge.next_turn(session)
+
+        self.assertEqual(
+            {call.name for call in turn.function_calls}, {"first", "second"}
+        )
+        self.bridge.submit_outputs(
+            session,
+            [(call.call_id, f"result:{call.name}") for call in turn.function_calls],
+        )
+        self.assertEqual(
+            set(await asyncio.gather(*relay_tasks)),
+            {"result:first", "result:second"},
+        )
+
     async def test_relay_rejects_tool_not_declared_by_responses_client(self):
         session = await self.bridge.start(
             BridgeStartRequest(

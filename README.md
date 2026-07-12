@@ -64,6 +64,12 @@ has `proxy.api_key`. It does not print admin or proxy credentials.
 endpoint invoked by Tabbit's backend; the MCP HTTP call stays pending until the
 Responses client submits the matching local tool result.
 
+`POST /v1/chat/completions` uses the same bridge whenever function tools are
+present. It returns standard `message.tool_calls` (or streaming
+`delta.tool_calls`), then resumes the same Agent task when the next request
+contains `role=tool` and the matching `tool_call_id`. Requests without client
+tools continue to use the existing direct chat transport.
+
 The relay must be reachable from Tabbit through public HTTPS. Configure it in
 Tabbit as `https://YOUR_HOST/mcp/relay` with
 `Authorization: Bearer <responses.relay_token>`. The relay exposes one MCP tool
@@ -163,6 +169,10 @@ PORT=9900 docker compose up -d
 
 - **端点**：`POST /v1/chat/completions`
 - **鉴权**：`Authorization: Bearer <your_proxy_api_key>`（使用内置 Token 池时必填）
+- **工具调用**：携带 `tools` 时自动进入 Agent + MCP relay 完整闭环；后续以
+  `role: tool` 和匹配的 `tool_call_id` 返回工具结果
+- **流式工具调用**：输出标准 `choices[0].delta.tool_calls`，并以
+  `finish_reason: tool_calls` 结束该轮
 
 **示例请求 (`curl`)**
 

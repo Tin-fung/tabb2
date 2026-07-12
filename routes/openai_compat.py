@@ -936,6 +936,11 @@ async def chat_completions(
     authorization: str = Header(None),
     x_tabbit_local_tools: str | None = Header(None),
 ):
+    from routes import chat_agent_bridge
+
+    if chat_agent_bridge.is_initialized() and chat_agent_bridge.should_handle(req):
+        return await chat_agent_bridge.handle(req, authorization)
+
     client, token_name, token_id = await get_client_and_token(authorization)
     # 模型解析：与 Claude 端点共用 resolve_model，保证映射行为一致
     default_model = _cfg.get("claude", "default_model") if _cfg else None

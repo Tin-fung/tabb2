@@ -16,7 +16,13 @@ from core.config import ConfigManager
 from core.token_manager import TokenManager
 from core.log_store import LogStore
 from core.model_registry import init_registry, get_registry
-from routes import openai_compat, admin_api, claude_api, responses_api
+from routes import (
+    admin_api,
+    chat_agent_bridge,
+    claude_api,
+    openai_compat,
+    responses_api,
+)
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
@@ -42,6 +48,9 @@ openai_compat.init(token_manager, cfg, log_store)
 admin_api.init(cfg, token_manager, log_store)
 claude_api.init(token_manager, cfg, log_store)
 responses_api.init(token_manager, cfg, log_store)
+chat_agent_bridge.init(
+    responses_api.get_bridge(), token_manager, cfg, log_store
+)
 
 
 @asynccontextmanager

@@ -92,7 +92,7 @@ async def create_response(
             )
             bridge.submit_outputs(session, outputs)
         else:
-            client, _, token_id = await openai_compat.get_client_and_token(
+            client, token_name, token_id = await openai_compat.get_client_and_token(
                 authorization
             )
             default_model = _cfg.get("claude", "default_model") if _cfg else None
@@ -105,6 +105,7 @@ async def create_response(
                     prompt=extract_prompt(req.input, req.instructions),
                     tools=req.tools or [],
                     token_id=token_id,
+                    token_name=token_name,
                 )
             )
     except (BridgeSessionNotFound, BridgeCallNotFound, ResponsesBridgeError) as exc:
