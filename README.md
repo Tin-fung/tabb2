@@ -243,9 +243,9 @@ Tabbit 对单次请求的 content 字段有 **~20421 字符** 的网关硬限制
 
 - **4 个主力模型边界一致**（Claude-Opus-4.8 / GPT-5.5 / GLM-5.1 / Kimi-K2.6 均为 20421）→ 网关统一闸门，与模型自身上下文窗口无关
 - **换接口绕不过**：`/api/v1/chat/completion` 与 `/chat/send`（agent 模式）边界完全一致
-- **真机还有输入框前端限制**：Tabbit 客户端输入框硬卡 20000 字符（UI 显示 `20000/20000`），proxy 绕过输入框直打接口，故由 `MAX_CONTENT_LEN=18450`（留 10% 余量）补上截断
+- **真机还有输入框前端限制**：Tabbit 客户端输入框硬卡 20000 字符（UI 显示 `20000/20000`），proxy 绕过输入框直打接口；普通兼容接口使用 `MAX_CONTENT_LEN=20000`，Agent 工具桥接使用 `AGENT_CONTENT_LIMIT=19500` 留出协议余量
 
-**实际影响**：GLM-5.1（20万 token）、GPT-5.5（1M token）等长上下文模型的优势，在 Tabbit 网关层被统一截断，**无法利用**。本项目通过 `compress_content` 智能压缩（保留最新消息 + 工具名，截断旧历史与详细 schema）在限制内最大化有效上下文。
+**当前处理**：普通兼容接口和 Agent 工具桥接都会在超长时把主 `content` 控制在网关限制内，并使用 `references` 携带完整上下文。Agent 工具桥接会在主字段保留本地工具路由规则、工具目录以及上下文头尾，完整未截断的对话放入 DOM reference；大型工具目录仍会逐级压缩 schema，避免触发 492。
 
 探测脚本见 `scripts/probe_context_limit.py`，Tabbit 调整限制后可重跑刷新结论。
 

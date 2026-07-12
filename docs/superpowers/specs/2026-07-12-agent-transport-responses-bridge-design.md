@@ -124,6 +124,29 @@ The retry guard compensates for the absence of a verified upstream field that
 fully disables native tools. It does not expose tool arguments, authorization
 headers, cookies, or sandbox credentials in logs.
 
+## Phase 5: Agent Long-Context References
+
+The `/chat/send` bootstrap enforces the same approximately 20,421-character
+`content` limit as direct chat. Tool-enabled OpenCode requests need additional
+space for routing policy and tool definitions, leaving an 8,000-character
+client prompt budget.
+
+To avoid losing middle conversation history, the bridge uses the proven
+Tabbit reference bypass:
+
+1. Short prompts remain unchanged and send no references.
+2. Long prompts keep a head/tail compact view in `content`, together with the
+   latest task, tool-routing policy, bridge identifier, and fitted tool catalog.
+3. A DOM reference named `Complete client conversation context` carries the
+   complete original client prompt without truncation.
+4. The main content tells the Agent to consult that reference for omitted
+   history while treating the latest task and routing policy as authoritative.
+5. Logs record only content/reference character counts, never reference text.
+
+References restore access to older facts and large documents, but they do not
+guarantee equal attention. Current instructions, tool routing, and critical
+constraints therefore remain visible in the main `content` field.
+
 ## Security Boundaries
 
 - Tabbit cookies, signing keys, sandbox credentials, and MCP authorization

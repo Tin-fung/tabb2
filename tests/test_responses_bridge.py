@@ -7,6 +7,7 @@ from core.responses_bridge import (
     BridgeCallNotFound,
     BridgeStartRequest,
     ResponsesBridge,
+    build_agent_relay_payload,
     build_relay_prompt,
     claims_cloud_artifact,
     extract_native_agent_tool_names,
@@ -262,6 +263,32 @@ class ResponsesBridgeTest(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(Exception, "websocket closed"):
             await relay_task
 
+    async def test_bridge_bootstrap_attaches_full_long_context_reference(self):
+        prompt = "HEAD\n" + "x" * 20_000 + "\nTAIL_TASK"
+        session = await self.bridge.start(
+            BridgeStartRequest(
+                client=FakeTabbitClient(),
+                model="Default",
+                requested_model="best",
+                prompt=prompt,
+                tools=[{"type": "function", "name": "write"}],
+            )
+        )
+        for _ in range(20):
+            if self.agents and self.agents[0].request is not None:
+                break
+            await asyncio.sleep(0)
+
+        request = self.agents[0].request
+        self.assertIsNotNone(request)
+        self.assertLessEqual(len(request.content), AGENT_CONTENT_LIMIT)
+        self.assertIn("TAIL_TASK", request.content)
+        self.assertEqual(len(request.references), 1)
+        self.assertIn(prompt, request.references[0]["content"])
+        self.agents[0].release.set()
+        final = await self.bridge.next_turn(session)
+        self.assertEqual(final.kind, "message")
+
     async def test_native_sandbox_route_retries_then_dispatches_locally(self):
         holder = {"attempt": 0}
 
@@ -405,13 +432,54 @@ class ResponsesBridgeTest(unittest.IsolatedAsyncioTestCase):
             )
         prompt = "SYSTEM:" + "s" * 12_000 + "\nUSER:KEEP_THIS_TASK"
 
-        content = build_relay_prompt(prompt, "bridge_large", tools)
+        content, references = build_agent_relay_payload(
+            prompt,
+            "bridge_large",
+            tools,
+        )
 
         self.assertLessEqual(len(content), AGENT_CONTENT_LIMIT)
         self.assertIn("bridge_large", content)
         self.assertIn("tool_0", content)
         self.assertIn("tool_79", content)
         self.assertIn("KEEP_THIS_TASK", content)
+        self.assertEqual(len(references), 1)
+        self.assertIn(prompt, references[0]["content"])
+
+    def test_long_agent_context_is_preserved_in_reference(self):
+        middle_secret = "MIDDLE_REFERENCE_SECRET"
+        prompt = (
+            "[SYSTEM]\nKEEP_HEAD\n"
+            + "a" * 10_000
+            + middle_secret
+            + "b" * 10_000
+            + "\n[USER]\nKEEP_LATEST_TASK"
+        )
+
+        content, references = build_agent_relay_payload(
+            prompt,
+            "bridge_context",
+            [{"type": "function", "name": "write"}],
+        )
+
+        self.assertLessEqual(len(content), AGENT_CONTENT_LIMIT)
+        self.assertIn("FULL CONTEXT REFERENCE", content)
+        self.assertIn("KEEP_HEAD", content)
+        self.assertIn("KEEP_LATEST_TASK", content)
+        self.assertNotIn(middle_secret, content)
+        self.assertEqual(len(references), 1)
+        self.assertIn(middle_secret, references[0]["content"])
+        self.assertIn(prompt, references[0]["content"])
+
+    def test_short_agent_context_does_not_create_reference(self):
+        content, references = build_agent_relay_payload(
+            "short task",
+            "bridge_short",
+            [{"type": "function", "name": "write"}],
+        )
+
+        self.assertIn("short task", content)
+        self.assertEqual(references, [])
 
 
 if __name__ == "__main__":

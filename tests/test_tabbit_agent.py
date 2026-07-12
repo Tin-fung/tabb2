@@ -145,6 +145,13 @@ class TabbitAgentClientTest(unittest.IsolatedAsyncioTestCase):
             session_id="session-1",
             content="use the tool",
             model="Default",
+            references=[
+                {
+                    "type": "dom",
+                    "title": "older context",
+                    "content": "REFERENCE_SECRET",
+                }
+            ],
         ))
 
         self.assertEqual(bootstrap.task_id, "task-1")
@@ -156,6 +163,7 @@ class TabbitAgentClientTest(unittest.IsolatedAsyncioTestCase):
         sent = json.loads(kwargs["content"])
         self.assertTrue(sent["agent_mode"])
         self.assertEqual(sent["content"], "use the tool")
+        self.assertEqual(sent["references"][0]["content"], "REFERENCE_SECRET")
 
     async def test_run_task_preserves_structured_mcp_call_and_stops(self):
         websocket = FakeWebSocket(

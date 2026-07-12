@@ -25,6 +25,14 @@ CALL_BATCH_WINDOW_SECONDS = 0.05
 AGENT_CONTENT_LIMIT = 19_500
 AGENT_PROMPT_RESERVE = 8_000
 MAX_NATIVE_ROUTE_ATTEMPTS = 2
+AGENT_CONTEXT_REFERENCE_TITLE = "Complete client conversation context"
+AGENT_CONTEXT_REFERENCE_NOTICE = (
+    "[FULL CONTEXT REFERENCE]\n"
+    "The complete, untruncated client conversation is attached as a reference "
+    "named 'Complete client conversation context'. Use that reference for older "
+    "history and any details omitted from this compact view. The latest task and "
+    "tool-routing rules in the main content remain authoritative.\n\n"
+)
 logger = logging.getLogger("tabbit2openai")
 
 
@@ -152,23 +160,27 @@ class ResponsesBridge:
                 dispatch_count_before = session.dispatch_count
                 chat_session_id = await session.client.create_chat_session()
                 agent = self._agent_factory(session.client)
-                content = build_relay_prompt(
+                content, references = build_agent_relay_payload(
                     prompt,
                     session.bridge_id,
                     tools,
                     retry_native_tools=retry_native_tools,
                 )
                 logger.info(
-                    "agent relay prompt prepared: chars=%d tools=%d attempt=%d",
+                    "agent relay prompt prepared: chars=%d tools=%d attempt=%d "
+                    "references=%d reference_chars=%d",
                     len(content),
                     len(session.allowed_tools),
                     attempt,
+                    len(references),
+                    sum(len(str(item.get("content") or "")) for item in references),
                 )
                 bootstrap = await agent.bootstrap_task(
                     AgentTaskRequest(
                         session_id=chat_session_id,
                         content=content,
                         model=session.model,
+                        references=references,
                     )
                 )
                 async for event in agent.run_task(bootstrap):
@@ -485,6 +497,52 @@ def build_relay_prompt(
         )
         content = f"{relay_header}{tool_catalog}{user_prefix}{fitted_prompt}"
     return content[:AGENT_CONTENT_LIMIT]
+
+
+def build_agent_relay_payload(
+    prompt: str,
+    bridge_id: str,
+    tools: list[dict[str, Any]],
+    *,
+    retry_native_tools: tuple[str, ...] = (),
+) -> tuple[str, list[dict[str, Any]]]:
+    prompt_limit = AGENT_PROMPT_RESERVE if extract_tool_names(tools) else AGENT_CONTENT_LIMIT
+    references = build_agent_context_references(prompt, prompt_limit)
+    content_prompt = prompt
+    if references:
+        visible_budget = max(256, prompt_limit - len(AGENT_CONTEXT_REFERENCE_NOTICE))
+        content_prompt = AGENT_CONTEXT_REFERENCE_NOTICE + truncate_middle(
+            prompt,
+            visible_budget,
+        )
+    content = build_relay_prompt(
+        content_prompt,
+        bridge_id,
+        tools,
+        retry_native_tools=retry_native_tools,
+    )
+    return content, references
+
+
+def build_agent_context_references(
+    prompt: str,
+    prompt_limit: int,
+) -> list[dict[str, Any]]:
+    if len(prompt) <= prompt_limit:
+        return []
+    return [
+        {
+            "type": "dom",
+            "title": AGENT_CONTEXT_REFERENCE_TITLE,
+            "content": (
+                "The following is the complete, untruncated conversation context "
+                "provided by the client. Use it together with the latest task and "
+                "tool-routing instructions in the main message.\n\n"
+                + prompt
+            ),
+            "metadata": {"path": "", "file_ids": []},
+        }
+    ]
 
 
 def fit_tool_catalog(tool_specs: list[dict[str, Any]], budget: int) -> str:

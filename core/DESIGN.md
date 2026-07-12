@@ -93,6 +93,11 @@ network access, while production uses the official runtime behavior.
 
 ## Known limitations
 
+- `responses_bridge.py` remains above the preferred module-size threshold while
+  the Agent state machine, native-route guard, prompt fitting, and reference
+  packaging are still evolving together. The prompt/reference helpers are pure
+  and independently tested so they can be extracted after the upstream
+  protocol stabilizes without changing the active-session state machine.
 - The HTTPS MCP relay must be published by the operator and configured in the
   Tabbit account before Codex tool calls can complete.
 - Bridge state is process-local; use one worker. Shared multi-process task state
@@ -103,6 +108,12 @@ network access, while production uses the official runtime behavior.
 - Agent relay prompts are capped below the verified `/chat/send` content limit.
   Large OpenCode/Codex tool catalogs degrade from full schemas to compact
   parameter summaries and finally tool signatures instead of triggering 492.
+- Agent bridge requests restore the direct-chat long-context bypass. When the
+  client conversation exceeds the main prompt budget, `content` keeps the
+  routing policy plus a head/tail compact view while one DOM `reference`
+  carries the complete untruncated client context. Short requests do not add a
+  reference. Tool-result continuations remain on the same Agent task, so the
+  reference is attached only at bootstrap.
 - Native-tool rejection is a routing guard, not an upstream capability switch:
   Tabbit currently exposes no verified `tool_choice` field that disables its
   native sandbox. A model that ignores both guarded attempts produces an
