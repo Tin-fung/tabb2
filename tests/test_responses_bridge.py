@@ -3,6 +3,7 @@ import json
 import unittest
 
 from core.responses_bridge import (
+    AGENT_CONTENT_LIMIT,
     BridgeCallNotFound,
     BridgeStartRequest,
     ResponsesBridge,
@@ -270,6 +271,37 @@ class ResponsesBridgeTest(unittest.IsolatedAsyncioTestCase):
 
     def test_prompt_without_tools_is_unchanged(self):
         self.assertEqual(build_relay_prompt("hello", "bridge_1", []), "hello")
+
+    def test_large_open_code_tool_catalog_fits_agent_gateway_limit(self):
+        tools = []
+        for index in range(80):
+            tools.append(
+                {
+                    "type": "function",
+                    "name": f"tool_{index}",
+                    "description": "d" * 500,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            f"argument_{item}": {
+                                "type": "string",
+                                "description": "p" * 500,
+                            }
+                            for item in range(12)
+                        },
+                        "required": ["argument_0"],
+                    },
+                }
+            )
+        prompt = "SYSTEM:" + "s" * 12_000 + "\nUSER:KEEP_THIS_TASK"
+
+        content = build_relay_prompt(prompt, "bridge_large", tools)
+
+        self.assertLessEqual(len(content), AGENT_CONTENT_LIMIT)
+        self.assertIn("bridge_large", content)
+        self.assertIn("tool_0", content)
+        self.assertIn("tool_79", content)
+        self.assertIn("KEEP_THIS_TASK", content)
 
 
 if __name__ == "__main__":

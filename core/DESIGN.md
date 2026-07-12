@@ -91,6 +91,9 @@ network access, while production uses the official runtime behavior.
 - The upstream maximum duration for a blocked MCP call is not yet measured.
 - Requests cancelled while waiting for the next Agent outcome close their
   bridge session so abandoned HTTP clients do not leak WebSocket tasks.
+- Agent relay prompts are capped below the verified `/chat/send` content limit.
+  Large OpenCode/Codex tool catalogs degrade from full schemas to compact
+  parameter summaries and finally tool signatures instead of triggering 492.
 - The current official client version must remain synchronized to avoid 493.
 
 ## Change history
