@@ -98,10 +98,15 @@ network access, while production uses the official runtime behavior.
 ## Known limitations
 
 - Model selection and billing are separate upstream concerns. The bridge sends
-  the resolved `selected_model` requested by the client, but Tabbit records MCP
-  Task-mode execution under the `agent` quota scene even when `Default` is free
-  in ordinary chat. New user turns create new Agent tasks; function-call result
-  continuations stay on the existing task.
+  the resolved `selected_model` requested by the client. Dynamic aliases use a
+  shared case/whitespace normalization function and known stale-cache entries
+  remain resolvable, preventing model ids such as `GPT-5.6 Sol` from silently
+  falling back to `Default`. Tabbit does not return the actual Task-mode model,
+  so this field is still an upstream request hint rather than a verified
+  execution identity. Tabbit records MCP Task-mode execution under the `agent`
+  quota scene even when `Default` is free in ordinary chat. New user turns
+  create new Agent tasks; function-call result continuations stay on the
+  existing task.
 - `responses_bridge.py` remains above the preferred module-size threshold while
   the Agent state machine, native-route guard, prompt fitting, and reference
   packaging are still evolving together. The prompt/reference helpers are pure

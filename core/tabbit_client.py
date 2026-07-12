@@ -133,19 +133,19 @@ def resolve_model(
     if not model:
         model = "best"
 
-    # 路径 1-2：动态注册表可用
-    if registry and registry.ready:
-        # 精确匹配动态清单
+    # 路径 1-2：动态注册表有匹配项时优先使用。
+    # 已知 alias 可使用过期但真实拉取过的缓存；否则 TTL 到期到下一次刷新之间
+    # 会把新模型静默降级成 Default。
+    if registry:
         if registry.has_alias(model):
             return registry.resolve(model)
-        # Claude 模型名前缀 → 动态解析
         for prefix, target in CLAUDE_MODEL_MAP.items():
-            if model.startswith(prefix):
+            if model.startswith(prefix) and registry.has_alias(target):
                 return registry.resolve(target)
-        # config 默认模型
         if default_model and registry.has_alias(default_model):
             return registry.resolve(default_model)
-        return registry.resolve(model)  # 兜底 Default
+        if registry.ready:
+            return registry.resolve(model)  # 动态清单在线但确实未知 → Default
 
     # 路径 3-4：动态注册表不可用，用静态 MODEL_MAP
     if model in MODEL_MAP:

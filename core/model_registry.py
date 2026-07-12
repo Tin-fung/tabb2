@@ -86,16 +86,16 @@ class ModelRegistry:
                 "sort_order": m.get("sort_order", 0),
             }
             models_meta.append(meta)
-            # alias: display_name 小写去空格
+            # alias: display_name 统一小写并移除所有空白字符。
+            # OpenCode 等客户端会原样返回 /v1/models 的带空格 id；注册和查询
+            # 必须走同一个规范化函数，否则会静默回退到 Default。
             if display:
-                alias_display = display.lower().replace(" ", "")
+                alias_display = normalize_model_alias(display)
                 if alias_display:
                     alias_map[alias_display] = selected
-                    alias_map[display] = selected  # 原值也收
-            # alias: name 本身（小写）
+            # alias: name 本身
             if name:
-                alias_map[name.lower()] = selected
-                alias_map[name] = selected
+                alias_map[normalize_model_alias(name)] = selected
             # 特殊：Default/最佳/best 统一映射
             if display in ("Default", "最佳") or name == "best-model":
                 alias_map["best"] = selected
@@ -151,11 +151,9 @@ class ModelRegistry:
                 name = m.get("id", "") or ""
                 selected = m.get("selected_model") or display or name
                 if display:
-                    alias_map[display.lower().replace(" ", "")] = selected
-                    alias_map[display] = selected
+                    alias_map[normalize_model_alias(display)] = selected
                 if name:
-                    alias_map[name.lower()] = selected
-                    alias_map[name] = selected
+                    alias_map[normalize_model_alias(name)] = selected
                 if display in ("Default", "最佳") or name == "best-model":
                     alias_map["best"] = selected
                     alias_map["default"] = selected
@@ -277,7 +275,7 @@ class ModelRegistry:
         """将请求模型名解析为上游 selected_model，未命中返回 Default"""
         if not alias:
             return "Default"
-        key = alias.lower().strip()
+        key = normalize_model_alias(alias)
         if self._cache and key in self._cache:
             return self._cache[key]
         # 兜底：动态缓存不可用时，直接把原名当 selected_model 传
@@ -286,7 +284,7 @@ class ModelRegistry:
     def has_alias(self, alias: str) -> bool:
         if not alias or not self._cache:
             return False
-        return alias.lower().strip() in self._cache
+        return normalize_model_alias(alias) in self._cache
 
     def list_models(self) -> list:
         """返回 OpenAI 格式的模型清单"""
@@ -343,3 +341,8 @@ def init_registry(base_url: str = "https://web.tabbit.ai", verify_ssl: bool = Fa
 
 def get_registry() -> Optional[ModelRegistry]:
     return _registry
+
+
+def normalize_model_alias(value: str) -> str:
+    """Normalize client/model-registry identifiers without losing punctuation."""
+    return "".join(str(value or "").lower().split())

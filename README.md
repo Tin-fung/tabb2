@@ -77,9 +77,14 @@ named `client_tool_dispatch`; it maps the call to the function tools supplied
 by Codex/OpenCode. The relay token is generated automatically and can be copied
 from the admin Settings page. Restart tabb2 after changing relay settings.
 
-Model selection is still honored in Agent bridge mode (`default`/`best` maps
-to Tabbit `Default`, explicit model names remain explicit). However Tabbit bills
-these requests under the `agent`/任务 scene because MCP requires Task mode. A
+The proxy preserves explicit model identifiers in Agent bridge mode
+(`default`/`best` maps to Tabbit `Default`; known explicit names are sent as
+their upstream `selected_model`). Model alias matching is case- and
+whitespace-insensitive so ids returned by `/v1/models`, such as `GPT-5.6 Sol`,
+do not silently fall back to `Default`. Tabbit does not expose the actual model
+used inside Task mode, so the selected model remains a request hint rather than
+a verifiable execution identity. Tabbit bills these requests under the
+`agent`/任务 scene because MCP requires Task mode. A
 model marked free for ordinary chat may therefore still consume Agent quota.
 Tool-result continuations reuse the same Agent task; a new user turn starts a
 new task and may create another Agent usage record.
