@@ -16,7 +16,7 @@ from core.config import ConfigManager
 from core.token_manager import TokenManager
 from core.log_store import LogStore
 from core.model_registry import init_registry, get_registry
-from routes import openai_compat, admin_api, claude_api
+from routes import openai_compat, admin_api, claude_api, responses_api
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s"
@@ -41,6 +41,7 @@ model_registry = init_registry(
 openai_compat.init(token_manager, cfg, log_store)
 admin_api.init(cfg, token_manager, log_store)
 claude_api.init(token_manager, cfg, log_store)
+responses_api.init(token_manager, cfg, log_store)
 
 
 @asynccontextmanager
@@ -64,6 +65,7 @@ async def lifespan(app: FastAPI):
     # 拉取失败时返回明确错误，让用户在管理 UI 手动刷新。
     await model_registry.refresh_with_retry()
     yield
+    await responses_api.get_bridge().close_all()
     await token_manager.close_all()
 
 
@@ -198,6 +200,7 @@ async def security_middleware(request: Request, call_next):
 # ── 挂载路由 ──
 app.include_router(claude_api.router)  # Claude Messages API（/v1/messages）
 app.include_router(openai_compat.router)  # OpenAI 兼容（/v1/chat/completions）
+app.include_router(responses_api.router)  # Responses + HTTPS MCP relay
 app.include_router(admin_api.router)
 
 # ── 静态文件 & 管理面板入口 ──

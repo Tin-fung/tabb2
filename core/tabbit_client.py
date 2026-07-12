@@ -16,6 +16,9 @@ import httpx
 
 logger = logging.getLogger("tabbit2openai")
 
+DEFAULT_BROWSER_VERSION = "1.4.46"
+DEFAULT_SPARKLE_VERSION = 10104046
+
 
 class TabbitAPIError(Exception):
     def __init__(
@@ -165,9 +168,10 @@ class TabbitClient:
         self.base_url = base_url or "https://web.tabbit.ai"
         self.client_id = client_id or "e7fa44387b1238ef1f6f"
         # 浏览器版本号 + sparkle_version，用于 x-req-ctx 头绕过上游版本校验（code 493）
-        # x-req-ctx = base64("版本号(sparkle_version)")，如 base64("1.1.39(10101039)")
-        self.browser_version = browser_version or "1.1.39"
-        self.sparkle_version = sparkle_version or 10101039
+        # x-req-ctx = base64("版本号(sparkle_version)")，如 base64("1.4.46(10104046)")
+        self.browser_version = browser_version or DEFAULT_BROWSER_VERSION
+        self.sparkle_version = sparkle_version or DEFAULT_SPARKLE_VERSION
+        self.verify_ssl = verify_ssl
         # 默认浏览器标记：编进 unique-uuid 第 5 位，后端据此发 Pro 会员权益
         # 移植自 web 端 eN(isDefault) 算法。设 True 即让后端按默认浏览器用户对待。
         self.default_browser = default_browser

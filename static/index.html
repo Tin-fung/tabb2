@@ -652,13 +652,13 @@ async function renderSettings(el) {
           <div>
             <label class="block text-sm text-zinc-400 mb-1.5">浏览器版本号（绕过版本校验）<span class="text-xs text-zinc-600 ml-1">browser_version</span></label>
             <div class="flex gap-2">
-              <input id="sBrowserVersion" type="text" value="${esc(s.tabbit.browser_version || '1.1.39')}" class="flex-1 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100" placeholder="例如 1.1.39">
+              <input id="sBrowserVersion" type="text" value="${esc(s.tabbit.browser_version || '1.4.46')}" class="flex-1 rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100" placeholder="例如 1.4.46">
               <button onclick="checkLatestVersion()" id="checkVerBtn" class="shrink-0 rounded-lg border border-zinc-700 px-3 py-2 text-xs hover:bg-zinc-800 transition-colors whitespace-nowrap">查最新</button>
             </div>
           </div>
           <div>
             <label class="block text-sm text-zinc-400 mb-1.5">Sparkle 构建号<span class="text-xs text-zinc-600 ml-1">sparkle_version</span></label>
-            <input id="sSparkleVersion" type="text" value="${esc(s.tabbit.sparkle_version || 10101039)}" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100" placeholder="例如 10101039">
+            <input id="sSparkleVersion" type="text" value="${esc(s.tabbit.sparkle_version || 10104046)}" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100" placeholder="例如 10104046">
           </div>
           <div>
             <label class="block text-sm text-zinc-400 mb-1.5">伪装默认浏览器（领免费 Pro 会员）</label>
@@ -724,9 +724,29 @@ async function renderSettings(el) {
       <!-- Proxy -->
       <div class="rounded-xl border border-zinc-800 bg-zinc-900 p-6">
         <h3 class="text-sm font-medium text-zinc-300 mb-4">代理配置</h3>
-        <div>
+        <div class="space-y-4">
+          <div>
           <label class="block text-sm text-zinc-400 mb-1.5">API Key（OpenAI/Claude 兼容接口使用内置 Token 池时必填）</label>
           <input id="sApiKey" type="text" value="${esc(s.proxy.api_key)}" placeholder="sk-..." class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500">
+          </div>
+          <div>
+            <label class="block text-sm text-zinc-400 mb-1.5">Responses MCP Relay Token</label>
+            <input id="sResponsesRelayToken" type="text" value="${esc(s.responses?.relay_token || '')}" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100">
+            <p class="text-xs text-zinc-500 mt-1">在 Tabbit MCP 配置中作为 Authorization: Bearer &lt;token&gt;；修改后需重启。</p>
+          </div>
+          <div class="max-w-xs">
+            <label class="block text-sm text-zinc-400 mb-1.5">Relay 等待工具结果（秒）</label>
+            <input id="sResponsesRelayTimeout" type="number" min="1" value="${s.responses?.relay_timeout_seconds || 300}" class="w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100">
+          </div>
+          <div class="rounded-lg bg-zinc-800/50 border border-zinc-700/50 p-4">
+            <p class="text-xs text-zinc-400 mb-2 font-medium">Codex Responses 配置</p>
+            <code class="block text-xs text-emerald-400 bg-zinc-900 rounded-md p-3 whitespace-pre">[model_providers.tabb2]
+name = "tabb2"
+base_url = "http://localhost:${s.server.port}/v1"
+wire_api = "responses"
+env_key = "TABB2_API_KEY"</code>
+            <p class="text-xs text-zinc-500 mt-2">Tabbit MCP Server URL 需使用公网 HTTPS：<span class="font-mono">https://YOUR_HOST/mcp/relay</span></p>
+          </div>
         </div>
       </div>
       <!-- Claude -->
@@ -800,10 +820,12 @@ async function saveSettings() {
         base_url: document.getElementById('sBaseUrl').value,
         client_id: document.getElementById('sClientId').value,
         browser_version: document.getElementById('sBrowserVersion').value,
-        sparkle_version: parseInt(document.getElementById('sSparkleVersion').value) || 10101039,
+        sparkle_version: parseInt(document.getElementById('sSparkleVersion').value) || 10104046,
         default_browser: document.getElementById('sDefaultBrowser').value === 'true',
         verify_ssl: document.getElementById('sVerifySsl').value === 'true',
         api_key: document.getElementById('sApiKey').value,
+        responses_relay_token: document.getElementById('sResponsesRelayToken').value,
+        responses_relay_timeout_seconds: parseInt(document.getElementById('sResponsesRelayTimeout').value) || 300,
         claude_default_model: document.getElementById('sClaudeModel').value,
         openai_system_prompt: document.getElementById('sOpenaiPrompt').value,
         claude_system_prompt: document.getElementById('sClaudePrompt').value,

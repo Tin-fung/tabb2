@@ -49,6 +49,45 @@ The live smoke can drain OpenAI/Claude streaming and non-streaming requests, the
 `parallel_web_search`. Omit `--proxy-api-key` when local `config.json` already
 has `proxy.api_key`. It does not print admin or proxy credentials.
 
+### Official Agent transport and Responses bridge (experimental)
+
+`core/tabbit_agent.py` implements the transport used by Tabbit Task mode:
+
+1. fetch the short-lived signing key from `/chat/sign-key`;
+2. sign and send the Task request through `/chat/send`;
+3. extract `task_id` from `browser_use_start`;
+4. connect to `/api/agent/v2/ws` and consume structured `tool_calls`,
+   `tool_finish`, `execute_content`, and `task_completed` events.
+
+`POST /v1/responses` now keeps the Agent WebSocket alive across the
+`function_call -> function_call_output` loop. `POST /mcp/relay` is the MCP
+endpoint invoked by Tabbit's backend; the MCP HTTP call stays pending until the
+Responses client submits the matching local tool result.
+
+The relay must be reachable from Tabbit through public HTTPS. Configure it in
+Tabbit as `https://YOUR_HOST/mcp/relay` with
+`Authorization: Bearer <responses.relay_token>`. The relay exposes one MCP tool
+named `dispatch`; the bridge maps it to the function tools supplied by Codex.
+The relay token is generated automatically and can be copied from the admin
+Settings page. Restart tabb2 after changing relay settings.
+
+Codex custom provider example:
+
+```toml
+model = "best"
+model_provider = "tabb2"
+
+[model_providers.tabb2]
+name = "tabb2"
+base_url = "http://localhost:8800/v1"
+wire_api = "responses"
+env_key = "TABB2_API_KEY"
+```
+
+The Agent protocol requires an accurate Tabbit client version. If upstream
+returns error 493, run `./check_tabbit_version.sh --compare` and synchronize
+`browser_version` and `sparkle_version`.
+
 ## 🚀 快速开始
 
 推荐使用 Docker 和 Docker Compose 进行部署，这是最简单、最可靠的方式。
@@ -112,6 +151,8 @@ PORT=9900 docker compose up -d
 | 上游 TLS 校验 | `tabbit.verify_ssl` | 默认为 `true`；仅本地抓包/调试时显式关闭 |
 | 可信反向代理 | `trusted_proxies` | CIDR/IP 列表；仅命中时才信任 `X-Forwarded-For` / `X-Real-IP` |
 | 代理 API Key | `proxy.api_key` | 为 Tabbit2API 设置全局 API Key；使用内置 Token 池时 OpenAI/Claude 兼容接口必须携带此 Key |
+| MCP Relay Token | `responses.relay_token` | Tabbit 调用 `/mcp/relay` 时使用的独立 Bearer token；首次启动自动生成 |
+| Relay 等待时间 | `responses.relay_timeout_seconds` | 等待 Codex 返回单次 `function_call_output` 的最长秒数 |
 | 全局 System Prompt | `proxy.system_prompt` | （可选）为所有 OpenAI 兼容请求注入的系统提示 |
 | Claude 默认模型 | `claude.default_model` | Claude 兼容模式下的默认模型 |
 | 日志最大条目 | `logging.max_entries` | 在内存中保留的最新日志数量 |
@@ -165,10 +206,23 @@ curl http://localhost:8800/v1/messages \
   }'
 ```
 
+### OpenAI Responses API（Codex 工具调用）
+
+- **端点**：`POST /v1/responses`
+- **鉴权**：`Authorization: Bearer <your_proxy_api_key>`
+- **工具回路**：支持 Responses `function_call.call_id` 与后续
+  `function_call_output.call_id`
+- **流式**：支持 Responses SSE 事件
+
+Tabbit 侧还必须配置公网 HTTPS MCP Relay，详见上方 Agent transport
+章节。当前 bridge state 存在单进程内存中，不支持多 worker 共享。
+
 ### 其他端点
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
+| POST | `/v1/responses` | OpenAI Responses / Codex Agent bridge |
+| POST | `/mcp/relay` | Tabbit backend 使用的认证 MCP Streamable HTTP 入口 |
 | `GET` | `/v1/models` | 获取 Tabbit 支持的模型列表（OpenAI 格式） |
 | `GET` | `/admin` | 访问 Web 管理面板 |
 | `POST`| `/api/admin/login` | 管理员登录接口 |

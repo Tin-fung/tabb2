@@ -6,8 +6,8 @@
 #   ./check_tabbit_version.sh --compare # 对比项目配置
 #
 # 版本号来源：Tabbit.app 的 Info.plist（最权威，随 Tabbit 自动更新）
-#   browser_version = CFBundleShortVersionString  (如 1.1.39)
-#   sparkle_version = CFBundleVersion             (如 10101039)
+#   browser_version = CFBundleShortVersionString  (如 1.4.46)
+#   sparkle_version = CFBundleVersion             (如 10104046)
 #   x-req-ctx = base64("browser_version(sparkle_version)")
 
 set -e

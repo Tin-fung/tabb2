@@ -319,7 +319,7 @@ def _build_content(
     return text, [], "chat"
 
 
-async def _get_client_and_token(
+async def get_client_and_token(
     authorization: str | None,
 ) -> tuple[TabbitClient, str, str]:
     """返回 (client, token_name, token_id)"""
@@ -362,6 +362,10 @@ async def _get_client_and_token(
         _fallback_clients.cleanup()
 
     return client, "bearer", ""
+
+
+# Backward-compatible internal alias for existing extensions/tests.
+_get_client_and_token = get_client_and_token
 
 
 class OpenAISSEWriter:
@@ -932,7 +936,7 @@ async def chat_completions(
     authorization: str = Header(None),
     x_tabbit_local_tools: str | None = Header(None),
 ):
-    client, token_name, token_id = await _get_client_and_token(authorization)
+    client, token_name, token_id = await get_client_and_token(authorization)
     # 模型解析：与 Claude 端点共用 resolve_model，保证映射行为一致
     default_model = _cfg.get("claude", "default_model") if _cfg else None
     tabbit_model = resolve_model(req.model, get_registry(), default_model)

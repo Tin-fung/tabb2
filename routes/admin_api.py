@@ -46,6 +46,8 @@ class SettingsUpdateRequest(BaseModel):
     default_browser: Optional[bool] = None
     verify_ssl: Optional[bool] = None
     api_key: Optional[str] = None
+    responses_relay_token: Optional[str] = None
+    responses_relay_timeout_seconds: Optional[int] = None
     max_entries: Optional[int] = None
     claude_default_model: Optional[str] = None
     openai_system_prompt: Optional[str] = None
@@ -541,6 +543,7 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
                 "api_key": _cfg.get("proxy", "api_key", default=""),
                 "system_prompt": _cfg.get("proxy", "system_prompt", default=""),
             },
+            "responses": _cfg.get("responses", default={}),
             "claude": _cfg.get("claude", default={"default_model": "best", "system_prompt": ""}),
             "logging": _cfg.get("logging"),
         }
@@ -565,6 +568,14 @@ def init(config: ConfigManager, token_manager: TokenManager, log_store: LogStore
             _cfg.set_val("tabbit", "verify_ssl", req.verify_ssl)
         if req.api_key is not None:
             _cfg.set_val("proxy", "api_key", req.api_key)
+        if req.responses_relay_token is not None:
+            _cfg.set_val("responses", "relay_token", req.responses_relay_token)
+        if req.responses_relay_timeout_seconds is not None:
+            _cfg.set_val(
+                "responses",
+                "relay_timeout_seconds",
+                max(1, req.responses_relay_timeout_seconds),
+            )
         if req.claude_default_model is not None:
             _cfg.set_val("claude", "default_model", req.claude_default_model)
         if req.openai_system_prompt is not None:

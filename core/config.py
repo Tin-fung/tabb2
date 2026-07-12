@@ -11,6 +11,8 @@ import bcrypt
 logger = logging.getLogger("tabbit2openai")
 
 CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.json"
+CURRENT_BROWSER_VERSION = "1.4.46"
+CURRENT_SPARKLE_VERSION = 10104046
 
 DEFAULT_CONFIG = {
     "server": {"host": "0.0.0.0", "port": 8800},
@@ -18,8 +20,8 @@ DEFAULT_CONFIG = {
     "tabbit": {
         "base_url": "https://web.tabbit.ai",
         "client_id": "e7fa44387b1238ef1f6f",
-        "browser_version": "1.1.39",
-        "sparkle_version": 10101039,
+        "browser_version": CURRENT_BROWSER_VERSION,
+        "sparkle_version": CURRENT_SPARKLE_VERSION,
         # 默认浏览器标记：编进 unique-uuid 第 5 位，让上游按 Pro 会员发权益。
         # 算法移植自 web 端 eN(isDefault)。True=伪装默认浏览器领免费 Pro。
         "default_browser": True,
@@ -29,6 +31,11 @@ DEFAULT_CONFIG = {
     "trusted_proxies": [],
     "tokens": [],
     "proxy": {"api_key": "", "system_prompt": ""},
+    "responses": {
+        "relay_token": "",
+        "relay_timeout_seconds": 300,
+        "session_ttl_seconds": 900,
+    },
     "claude": {"default_model": "best", "system_prompt": ""},
     "logging": {"max_entries": 500},
 }
@@ -79,12 +86,14 @@ class ConfigManager:
             # 迁移：旧版 SHA-256 密码哈希升级为 bcrypt
             self._migrate_password_hash(config)
             self._ensure_admin_security(config)
+            self._ensure_responses_security(config)
             # 确保新字段被写入
             self._save(config)
             return config
 
         config = copy.deepcopy(DEFAULT_CONFIG)
         config["admin"]["jwt_secret"] = secrets.token_hex(32)
+        self._ensure_responses_security(config)
         # 首次启动生成随机密码
         initial_pw = generate_initial_password()
         config["admin"]["password_hash"] = hash_password(initial_pw)
@@ -109,12 +118,11 @@ class ConfigManager:
         # 旧域名 → 新域名
         if tabbit.get("base_url") in (None, "https://web.tabbitbrowser.com"):
             tabbit["base_url"] = "https://web.tabbit.ai"
-        # 旧版本号 1.1 → 1.1.39（x-req-ctx 编码需要完整三段版本号）
-        if tabbit.get("browser_version") in (None, "1.1", "145"):
-            tabbit["browser_version"] = "1.1.39"
-        # sparkle_version 默认值
-        if not tabbit.get("sparkle_version"):
-            tabbit["sparkle_version"] = 10101039
+        # 已确认失效的版本会触发 493，迁移到当前官方客户端版本。
+        if tabbit.get("browser_version") in (None, "1.1", "145", "1.1.39"):
+            tabbit["browser_version"] = CURRENT_BROWSER_VERSION
+        if tabbit.get("sparkle_version") in (None, 0, 10101039):
+            tabbit["sparkle_version"] = CURRENT_SPARKLE_VERSION
         # default_browser 默认开启（领免费 Pro 会员）
         if tabbit.get("default_browser") is None:
             tabbit["default_browser"] = True
@@ -125,6 +133,11 @@ class ConfigManager:
         admin = config.setdefault("admin", {})
         if not admin.get("jwt_secret"):
             admin["jwt_secret"] = secrets.token_hex(32)
+
+    def _ensure_responses_security(self, config: dict):
+        responses = config.setdefault("responses", {})
+        if not responses.get("relay_token"):
+            responses["relay_token"] = secrets.token_urlsafe(32)
 
     def _migrate_password_hash(self, config: dict):
         """迁移旧版 SHA-256 密码哈希为 bcrypt
